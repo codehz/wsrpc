@@ -29,3 +29,17 @@ add_library(rpc
 )
 target_include_directories(rpc PUBLIC include)
 set_property(TARGET rpc PROPERTY CXX_STANDARD 17)
+
+add_library(rpcws
+  src/rpcws.cpp
+  include/rpcws.hpp
+)
+target_link_libraries(rpcws rpc ws pthread)
+target_include_directories(rpcws PUBLIC include)
+set_property(TARGET rpcws PROPERTY CXX_STANDARD 17)
+
+add_executable(rpcws_test
+  src/test.cpp
+)
+target_link_libraries(rpcws_test rpcws)
+set_property(TARGET rpcws_test PROPERTY CXX_STANDARD 17)

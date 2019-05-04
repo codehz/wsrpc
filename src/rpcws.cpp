@@ -1,22 +1,9 @@
-#include "ws.hpp"
-#include <arpa/inet.h>
-#include <cassert>
-#include <cstring>
-#include <exception>
-#include <iostream>
-#include <netinet/in.h>
+#include <netdb.h>
+#include <rpcws.hpp>
 #include <sstream>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-template <typename T> inline T check(T retcode, char const *str) {
-  if (retcode == -1) {
-    perror(str);
-    exit(EXIT_FAILURE);
-  }
-  return retcode;
-}
 
 class Buffer {
   char *start     = nullptr;
@@ -76,14 +63,16 @@ public:
   ~Buffer() { delete[] start; }
 };
 
-class CommonException : public std::runtime_error {
-public:
-  CommonException()
-      : runtime_error(strerror(errno)) {}
-};
+namespace rpcws {
 
-class RecvFailed : public CommonException {};
-class SendFailed : public CommonException {};
+InvalidAddress::InvalidAddress()
+    : std::runtime_error("") {}
+
+InvalidSocketOp::InvalidSocketOp(char const *msg)
+    : std::runtime_error(std::string(msg) + ": " + strerror(errno)) {}
+
+CommonException::CommonException()
+    : std::runtime_error(strerror(errno)) {}
 
 void safeSend(int fd, std::string_view data) {
   while (!data.empty()) {
@@ -93,16 +82,86 @@ void safeSend(int fd, std::string_view data) {
   }
 }
 
-struct AutoClose {
-  int fd;
-  ~AutoClose() { close(fd); }
-};
+bool starts_with(std::string_view &full, std::string_view part) {
+  bool res = full.compare(0, part.length(), part) == 0;
+  if (res) full.remove_prefix(part.length());
+  return res;
+}
 
-void process(int fd) {
-  using namespace ws;
+std::string_view eat(std::string_view &full, std::size_t length) {
+  auto ret = full.substr(0, length);
+  full.remove_prefix(length);
+  return ret;
+}
 
-  AutoClose ac{ fd };
+wsio::wsio(std::string_view address) {
+  if (!starts_with(address, "ws://")) throw InvalidAddress();
+  auto end = address.find_first_of("[:/");
+  if (end == std::string_view::npos) throw InvalidAddress();
+  bool quoted = false;
+  if (address[end] == '[') {
+    quoted = true;
+    end    = address.find(']');
+    if (end == std::string_view::npos) throw InvalidAddress();
+    end++;
+  }
+  auto host = eat(address, end);
+  if (quoted) {
+    host.remove_prefix(1);
+    host.remove_suffix(1);
+  }
+  std::string_view port = "80";
+  if (address[0] == ':') {
+    address.remove_prefix(1);
+    end = address.find('/');
+    if (end == std::string_view::npos) throw InvalidAddress();
+    port = eat(address, end);
+  }
+  path = eat(address, address.find_first_of("?#"));
+  {
+    std::string host_str{ host };
+    std::string port_str{ port };
+    addrinfo hints = {
+      .ai_flags    = AI_PASSIVE,
+      .ai_family   = AF_UNSPEC,
+      .ai_socktype = SOCK_STREAM,
+    };
+    addrinfo *list;
+    auto ret = getaddrinfo(host_str.c_str(), port_str.c_str(), &hints, &list);
+    if (ret != 0) throw InvalidAddress();
+    fd   = socket(family = list->ai_family, list->ai_socktype, list->ai_protocol);
+    addr = { (char *)list->ai_addr, list->ai_addrlen };
+    freeaddrinfo(list);
+    if (fd == 0) throw InvalidSocketOp("socket");
+    int yes = 1;
+    ret     = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    if (ret != 0) throw InvalidSocketOp("setsockopt");
+    ret = bind(fd, (sockaddr *)&addr[0], addr.length());
+    if (ret != 0) throw InvalidSocketOp("bind");
+    ret = listen(fd, 0xFF);
+    if (ret != 0) throw InvalidSocketOp("listen");
+  }
+}
 
+wsio::~wsio() { close(fd); }
+
+void wsio::accept(accept_fn process) {
+  while (true) {
+    sockaddr_storage ad = {};
+    socklen_t len       = sizeof(ad);
+    auto remote         = ::accept(fd, (sockaddr *)&ad, &len);
+    if (remote == -1) throw InvalidSocketOp("accept");
+    process(std::make_unique<wsio::client>(remote, path));
+  }
+}
+
+wsio::client::client(int fd, std::string_view path)
+    : fd(fd)
+    , path(path) {}
+
+wsio::client::~client() { close(fd); }
+
+void wsio::client::recv(recv_fn process) {
   State state    = State::STATE_OPENING;
   FrameType type = FrameType::INCOMPLETE_FRAME;
   Frame<Output> oframe;
@@ -110,11 +169,10 @@ void process(int fd) {
   Buffer buffer;
 
   while (type == FrameType::INCOMPLETE_FRAME) {
-    ssize_t readed = recv(fd, buffer.allocate(0xFFFF), 0xFFFF, 0);
-    if (!readed) {
-      if (errno != 0) throw RecvFailed();
-      return;
-    }
+    ssize_t readed = ::recv(fd, buffer.allocate(0xFFFF), 0xFFFF, 0);
+    if (!readed) return;
+    if (readed == -1) { throw RecvFailed(); }
+
     buffer.eat(readed);
 
     if (state == State::STATE_OPENING) {
@@ -144,7 +202,7 @@ void process(int fd) {
 
     if (state == State::STATE_OPENING) {
       assert(type == FrameType::OPENING_FRAME);
-      if (hs.resource != "/") {
+      if (hs.resource != path) {
         safeSend(fd, "HTTP/1.1 404 Not Found\r\n\r\n");
         return;
       }
@@ -166,7 +224,7 @@ void process(int fd) {
         }
         return;
       case FrameType::PING_FRAME: safeSend(fd, makeFrame({ FrameType::PONG_FRAME })); break;
-      case FrameType::TEXT_FRAME: safeSend(fd, makeFrame({ FrameType::TEXT_FRAME, oframe.payload })); break;
+      case FrameType::TEXT_FRAME: process(oframe.payload); break;
       default: break;
       }
       type = FrameType::INCOMPLETE_FRAME;
@@ -176,37 +234,6 @@ void process(int fd) {
   }
 }
 
-int main() {
-  using namespace ws;
+void wsio::client::send(std::string_view data) { safeSend(fd, makeFrame({ FrameType::TEXT_FRAME, data })); }
 
-  constexpr auto port = 16400;
-
-  auto server = socket(AF_INET, SOCK_STREAM, 0);
-  check(server, "socket");
-
-  int val = 1;
-
-  check(setsockopt(server, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val)), "setsockopt");
-
-  sockaddr_in local = {
-    .sin_family = AF_INET,
-    .sin_port   = htons(port),
-    .sin_addr   = { .s_addr = INADDR_ANY },
-  };
-
-  check(bind(server, (sockaddr *)&local, sizeof(local)), "bind");
-  check(listen(server, 1), "listen");
-
-  std::cout << "Listen: " << port << std::endl;
-
-  while (true) {
-    char buffer[32]       = {};
-    sockaddr_in remote    = {};
-    socklen_t sockaddrlen = sizeof(remote);
-    auto client           = check(accept(server, (sockaddr *)&remote, &sockaddrlen), "accept");
-    std::cout << "connected: " << inet_ntop(AF_INET, &remote.sin_addr, buffer, 32) << std::endl;
-    try {
-      process(client);
-    } catch (CommonException *e) { std::cerr << e->what() << std::endl; }
-  }
-}
+} // namespace rpcws

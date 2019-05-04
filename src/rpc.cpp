@@ -4,7 +4,51 @@
 
 namespace rpc {
 
-RPC::RPC(decltype(io) &&io) { this->io = std::move(io); }
+RPC::RPC(decltype(io) &&io)
+    : io(std::move(io)) {
+  reg("rpc.on", [this](std::shared_ptr<rpc::io::client> client, json input) -> json {
+    if (input.is_array()) {
+      std::map<std::string, std::string> lists;
+      for (auto item : input) {
+        if (item.is_string()) {
+          lists.emplace(item.get<std::string>(), "provided event invalid");
+        } else
+          throw InvalidParams{};
+      }
+      for (auto &[k, v] : lists) {
+        auto it = std::find(server_events.begin(), server_events.end(), k);
+        if (it != server_events.end()) {
+          server_event_map[k].emplace(client);
+          v = "ok";
+        }
+      }
+      return lists;
+    } else
+      throw InvalidParams{};
+  });
+  reg("rpc.off", [this](std::shared_ptr<rpc::io::client> client, json input) -> json {
+    if (input.is_array()) {
+      std::map<std::string, std::string> lists;
+      for (auto item : input) {
+        if (item.is_string()) {
+          lists.emplace(item.get<std::string>(), "provided event invalid");
+        } else
+          throw InvalidParams{};
+      }
+      for (auto &[k, v] : lists) {
+        auto it = std::find(server_events.begin(), server_events.end(), k);
+        if (it != server_events.end()) {
+          if (server_event_map[k].erase(client) == 0)
+            v = "not subscribed";
+          else
+            v = "ok";
+        }
+      }
+      return lists;
+    } else
+      throw InvalidParams{};
+  });
+}
 
 RPC::~RPC() {}
 
@@ -14,30 +58,26 @@ void RPC::event(std::string_view name) {
 }
 
 void RPC::emit(std::string_view name, json data) {
+  auto obj = json::object({ { "notification", name }, { "params", data } }).dump();
   std::lock_guard guard{ mtx };
-  auto [low, high] = server_event_map.equal_range(name);
-  while (low != high) {
-    auto ptr = low->second.lock();
-    if (ptr) {
-      ptr->send(data.dump());
-      ++low;
-    } else {
-      server_event_map.erase(low++);
+  auto it = server_event_map.find(name);
+  if (it != server_event_map.end()) {
+    auto set = it->second;
+    auto p = set.begin();
+    auto end = set.end();
+    while (p != end) {
+      auto ptr = p->lock();
+      if (ptr) {
+        ptr->send(obj);
+        ++p;
+      } else {
+        set.erase(p++);
+      }
     }
   }
 }
 
-void RPC::on(std::string_view name, std::function<void(json)> cb) {
-  std::lock_guard guard{ mtx };
-  client_event_map.emplace(name, cb);
-}
-
-void RPC::off(std::string const &name) {
-  std::lock_guard guard{ mtx };
-  client_event_map.erase(name);
-}
-
-void RPC::reg(std::string_view name, std::function<json(json)> cb) {
+void RPC::reg(std::string_view name, std::function<json(std::shared_ptr<rpc::io::client>, json)> cb) {
   std::lock_guard guard{ mtx };
   methods.emplace(name, cb);
 }
@@ -48,27 +88,26 @@ void RPC::unreg(std::string const &name) {
 }
 
 void RPC::start() {
-  io->accept(
-      [this](std::unique_ptr<rpc::io::client> client) {
-        std::lock_guard guard{ mtx };
-        std::shared_ptr ptr = std::move(client);
-        clients.emplace(ptr, std::make_unique<std::thread>([this, ptr] {
-                          ptr->recv([this, ptr](auto data) { incoming(ptr, data); }, [this, ptr](auto err) { error(ptr, err); });
-                          std::lock_guard guard{ mtx };
-                          clients.erase(ptr);
-                        }));
-      },
-      [this](auto err) { error(err); });
+  io->accept([this](std::unique_ptr<rpc::io::client> client) {
+    std::lock_guard guard{ mtx };
+    std::shared_ptr ptr = std::move(client);
+    clients.emplace(ptr, std::make_unique<std::thread>([this, ptr] {
+                      ptr->recv([this, ptr](auto data) { incoming(ptr, data); });
+                      std::lock_guard guard{ mtx };
+                      clients.erase(ptr);
+                    }));
+  });
 }
 
-struct Invalid : std::exception {
-  char const *msg;
+struct Invalid : std::runtime_error {
   Invalid(char const *msg)
-      : msg(msg) {}
-  char const *what() { return msg; }
+      : runtime_error(msg) {}
 };
 
-struct NotFound : std::exception {};
+struct NotFound : std::runtime_error {
+  NotFound()
+      : runtime_error("method not found") {}
+};
 
 void RPC::incoming(std::shared_ptr<rpc::io::client> client, std::string_view data) {
   try {
@@ -88,14 +127,20 @@ void RPC::incoming(std::shared_ptr<rpc::io::client> client, std::string_view dat
     auto it = methods.find(method);
     try {
       if (it == methods.end()) throw NotFound();
-      auto result = it->second(params);
+      auto result = it->second(client, params);
       if (has_id) {
         auto ret = json::object({ { "jsonrpc", "2.0" }, { "result", result }, { "id", id } });
         client->send(ret.dump());
       }
     } catch (NotFound &e) {
       std::lock_guard guard{ mtx };
-      auto err = json::object({ { "code", -32601 }, { "message", "method not found" } });
+      auto err = json::object({ { "code", -32601 }, { "message", e.what() } });
+      auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
+      if (has_id) ret["id"] = id;
+      client->send(ret.dump());
+    } catch (InvalidParams &e) {
+      std::lock_guard guard{ mtx };
+      auto err = json::object({ { "code", -32602 }, { "message", e.what() } });
       auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
       if (has_id) ret["id"] = id;
       client->send(ret.dump());
@@ -122,8 +167,5 @@ void RPC::incoming(std::shared_ptr<rpc::io::client> client, std::string_view dat
     client->send(ret.dump());
   }
 }
-
-void RPC::error(std::string_view data) { std::cerr << data << std::endl; }
-void RPC::error(std::shared_ptr<rpc::io::client> client, std::string_view data) { std::cerr << data << std::endl; }
 
 } // namespace rpc
