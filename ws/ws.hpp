@@ -2,7 +2,7 @@
 
 #include <string>
 #include <string_view>
-#include <tuple>
+#include <vector>
 #include <type_traits>
 
 namespace ws {
@@ -36,10 +36,17 @@ using Data = std::conditional_t<std::is_same_v<io, Input>, std::string_view,
 
 struct Handshake {
   FrameType type;
-  Data<Output> host;
-  Data<Output> origin;
-  Data<Output> key;
-  Data<Output> resource;
+  Data<Input> host;
+  Data<Input> origin;
+  Data<Input> key;
+  Data<Input> resource;
+  std::vector<Data<Input>> protocols;
+
+  inline void reset() {
+    host = origin = key = resource = {};
+    std::vector<Data<Input>> empty;
+    protocols.swap(empty);
+  }
 };
 
 template <typename io = Output> struct Frame;
@@ -56,12 +63,8 @@ template <> struct Frame<Input> {
 };
 
 Handshake parseHandshake(Data<Input> input);
-Data<Output> makeHandshakeAnswer(Handshake input);
+Data<Output> makeHandshakeAnswer(Data<Input> key, Data<Input> protocol = {});
 
 Frame<Output> parseFrame(Data<Input>);
 Data<Output> makeFrame(Frame<Input>);
-
-template <typename io>
-static constexpr Frame<io> NullHandshake = {FrameType::EMPTY_FRAME};
-
 } // namespace ws

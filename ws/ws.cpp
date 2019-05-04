@@ -16,6 +16,23 @@ uint64_t htonll(uint64_t val) {
   return (((uint64_t)htonl(val)) << 32) + htonl(val >> 32);
 }
 
+std::vector<std::string_view> split(std::string_view inp) {
+  std::vector<std::string_view> output;
+  size_t n = std::string_view::npos;
+  while (!inp.empty()) {
+    n = inp.find_first_not_of(" ");
+    if (n == std::string_view::npos)
+      break;
+    inp.remove_prefix(n);
+    n = inp.find_first_of(",");
+    if (n == std::string_view::npos)
+      break;
+    output.emplace_back(inp.substr(0, n));
+    inp.remove_prefix(n);
+  }
+  return output;
+}
+
 namespace ws {
 
 inline size_t base64len(size_t n) { return (n + 2) / 3 * 4; }
@@ -72,44 +89,34 @@ Handshake parseHandshake(Data<Input> input) {
   bool connectionFlag = false;
   bool upgradeFlag = false;
   while (input.length() != 0) {
-    auto end = std::string_view::npos;
-    if (starts_with(input, "Host: ")) {
-      end = input.find("\r\n");
-      result.host = eat(input, end);
-      input.remove_prefix(2);
-    } else if (starts_with(input, "Origin: ")) {
-      end = input.find("\r\n");
-      result.origin = eat(input, end);
-      input.remove_prefix(2);
-    } else if (starts_with(input, "Sec-WebSocket-Protocol: ")) {
+    auto end = input.find("\r\n");
+    if (end == std::string_view::npos)
       return {FrameType::ERROR_FRAME};
-    } else if (starts_with(input, "Sec-WebSocket-Key: ")) {
-      end = input.find("\r\n");
-      result.key = eat(input, end);
-      input.remove_prefix(2);
-    } else if (starts_with(input, "Sec-WebSocket-Version: ")) {
-      end = input.find("\r\n");
-      auto version = eat(input, end);
+    auto line = eat(input, end);
+    input.remove_prefix(2);
+
+    if (starts_with(line, "Host: ")) {
+      result.host = line;
+    } else if (starts_with(line, "Origin: ")) {
+      result.origin = line;
+    } else if (starts_with(line, "Sec-WebSocket-Protocol: ")) {
+      result.protocols = split(line);
+    } else if (starts_with(line, "Sec-WebSocket-Key: ")) {
+      result.key = line;
+    } else if (starts_with(line, "Sec-WebSocket-Version: ")) {
+      auto version = line;
       if (version != "13")
         return {FrameType::ERROR_FRAME};
-      input.remove_prefix(2);
-    } else if (starts_with(input, "Connection: ")) {
-      end = input.find("\r\n");
-      if (eat(input, end) == "Upgrade")
+    } else if (starts_with(line, "Connection: ")) {
+      if (line == "Upgrade")
         upgradeFlag = true;
       else
         return {FrameType::ERROR_FRAME};
-      input.remove_prefix(2);
-    } else if (starts_with(input, "Upgrade: ")) {
-      end = input.find("\r\n");
-      if (eat(input, end) == "websocket")
+    } else if (starts_with(line, "Upgrade: ")) {
+      if (line == "websocket")
         connectionFlag = true;
       else
         return {FrameType::ERROR_FRAME};
-      input.remove_prefix(2);
-    } else {
-      end = input.find("\r\n");
-      input.remove_prefix(end + 2);
     }
   }
   if (!connectionFlag || !upgradeFlag)
@@ -117,20 +124,23 @@ Handshake parseHandshake(Data<Input> input) {
   return result;
 }
 
-Data<Output> makeHandshakeAnswer(Handshake input) {
+Data<Output> makeHandshakeAnswer(Data<Input> key, Data<Input> protocol) {
   static constexpr char secret[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
   std::ostringstream oss;
   byte hash[20] = {0};
   SHA1_CTX ctx;
   SHA1Init(&ctx);
-  SHA1Update(&ctx, (byte const *)input.key.c_str(), input.key.length());
+  SHA1Update(&ctx, (byte const *)&key[0], key.length());
   SHA1Update(&ctx, (byte const *)secret, 36);
   SHA1Final(hash, &ctx);
   auto reskey = base64(std::string_view{(char const *)hash, 20});
   oss << "HTTP/1.1 101 Switching Protocols" << rn;
   oss << "Upgrade: websocket" << rn;
   oss << "Connection: Upgrade" << rn;
-  oss << "Sec-WebSocket-Accept: " << reskey << rn << rn;
+  oss << "Sec-WebSocket-Accept: " << reskey << rn;
+  if (!protocol.empty())
+    oss << "Sec-Websocket-Protocol: " << protocol << rn;
+  oss << rn;
   return oss.str();
 }
 
@@ -173,13 +183,13 @@ Frame<Output> parseFrame(Data<Input> input) {
       opcode == FrameType::PONG_FRAME) {
     char extraBytes = 0;
     auto payloadLength = getPayloadLength(input, extraBytes, opcode);
-    if (payloadLength > 0) {
+    if (opcode != FrameType::ERROR_FRAME) {
       if (payloadLength + 6 + extraBytes > input.length())
         return {FrameType::INCOMPLETE_FRAME};
       auto masking = input.substr(2 + extraBytes, 4);
       auto eaten = input.length() - 6 - extraBytes;
       Frame<Output> frame{
-          opcode, eaten,
+          opcode, eaten + 6 + extraBytes,
           std::string(input.substr(2 + extraBytes + 4, payloadLength))};
       for (size_t i = 0; i < payloadLength; i++)
         frame.payload[i] ^= masking[i % 4];
@@ -191,7 +201,7 @@ Frame<Output> parseFrame(Data<Input> input) {
 
 Data<Output> makeFrame(Frame<Input> frame) {
   std::ostringstream oss;
-  oss << ((char)frame.type | 0x80);
+  oss << (char)((char)frame.type | 0x80);
   const auto dataLength = frame.payload.length();
   if (dataLength < 125) {
     oss << (char)dataLength;
