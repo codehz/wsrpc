@@ -147,10 +147,7 @@ wsio::wsio(std::string_view address) {
   if (ev == -1) throw InvalidSocketOp("eventfd");
 }
 
-wsio::~wsio() {
-  close(fd);
-  close(ev);
-}
+wsio::~wsio() { close(fd); close(ev); }
 
 struct AutoClose {
   int fd;
