@@ -30,6 +30,7 @@ struct wsio : io {
   struct client : io::client {
     client(int, std::string_view);
     ~client() override;
+    void shutdown() override;
     void recv(recv_fn) override;
     void send(std::string_view) override;
 

@@ -50,7 +50,14 @@ RPC::RPC(decltype(io) &&io)
   });
 }
 
-RPC::~RPC() {}
+RPC::~RPC() {
+  std::lock_guard guard{ mtx };
+
+  for (auto &[client, thread] : clients) {
+    thread->detach();
+    client->shutdown();
+  }
+}
 
 void RPC::event(std::string_view name) {
   std::lock_guard guard{ mtx };

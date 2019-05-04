@@ -25,6 +25,7 @@ struct io {
   using accept_fn = std::function<void(std::unique_ptr<client>)>;
   struct client {
     inline virtual ~client(){};
+    virtual void shutdown()             = 0;
     virtual void recv(recv_fn)          = 0;
     virtual void send(std::string_view) = 0;
   };

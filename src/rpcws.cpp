@@ -132,7 +132,7 @@ wsio::wsio(std::string_view address) {
       addrinfo *list;
       auto ret = getaddrinfo(host_str.c_str(), port_str.c_str(), &hints, &list);
       if (ret != 0) throw InvalidAddress();
-      fd   = socket(list->ai_family, list->ai_socktype, list->ai_protocol);
+      fd               = socket(list->ai_family, list->ai_socktype, list->ai_protocol);
       std::string addr = { (char *)list->ai_addr, list->ai_addrlen };
       freeaddrinfo(list);
       if (fd == -1) throw InvalidSocketOp("socket");
@@ -145,13 +145,11 @@ wsio::wsio(std::string_view address) {
       if (ret != 0) throw InvalidSocketOp("listen");
     }
   } else if (starts_with(address, "ws+unix://")) {
-    std::string host{address};
+    std::string host{ address };
     if (host.length() >= 108) throw InvalidAddress();
-    path      = "/";
+    path = "/";
     {
-      sockaddr_un addr = {
-        .sun_family = AF_UNIX
-      };
+      sockaddr_un addr = { .sun_family = AF_UNIX };
       memcpy(addr.sun_path, &host[0], host.length());
       fd = socket(AF_UNIX, SOCK_STREAM, 0);
       if (fd == -1) throw InvalidSocketOp("socket");
@@ -161,7 +159,8 @@ wsio::wsio(std::string_view address) {
       ret = listen(fd, 0xFF);
       if (ret != 0) throw InvalidSocketOp("listen");
     }
-  } else throw InvalidAddress();
+  } else
+    throw InvalidAddress();
   ev = eventfd(0, 0);
   if (ev == -1) throw InvalidSocketOp("eventfd");
 }
@@ -219,6 +218,11 @@ wsio::client::client(int fd, std::string_view path)
     , path(path) {}
 
 wsio::client::~client() { close(fd); }
+
+void wsio::client::shutdown() {
+  ::shutdown(fd, SHUT_WR);
+  close(fd);
+}
 
 void wsio::client::recv(recv_fn process) {
   State state    = State::STATE_OPENING;
