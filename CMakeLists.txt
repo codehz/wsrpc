@@ -15,8 +15,8 @@ add_library(ws
   ws/ws.hpp
 )
 target_link_libraries(ws minsec)
-set_property(TARGET ws PROPERTY CXX_STANDARD 20)
+set_property(TARGET ws PROPERTY CXX_STANDARD 17)
 
 add_executable(ws_test ws/test.cpp)
-set_property(TARGET ws_test PROPERTY CXX_STANDARD 20)
+set_property(TARGET ws_test PROPERTY CXX_STANDARD 17)
 target_link_libraries(ws_test ws)
