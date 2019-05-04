@@ -64,7 +64,7 @@ void RPC::event(std::string_view name) {
   server_events.emplace_back(name);
 }
 
-void RPC::emit(std::string_view name, json data) {
+void RPC::emit(std::string const &name, json data) {
   auto obj = json::object({ { "notification", name }, { "params", data } }).dump();
   std::lock_guard guard{ mtx };
   auto it = server_event_map.find(name);

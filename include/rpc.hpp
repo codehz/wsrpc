@@ -46,7 +46,7 @@ class RPC {
   std::map<std::shared_ptr<rpc::io::client>, std::unique_ptr<std::thread>> clients;
   std::map<std::string, std::function<json(std::shared_ptr<rpc::io::client>, json)>> methods;
   std::vector<std::string> server_events;
-  std::map<std::string_view, std::set<std::weak_ptr<rpc::io::client>, wptr_less_than<rpc::io::client>>> server_event_map;
+  std::map<std::string, std::set<std::weak_ptr<rpc::io::client>, wptr_less_than<rpc::io::client>>> server_event_map;
 
 public:
   RPC(decltype(io) &&io);
@@ -56,7 +56,7 @@ public:
   RPC &operator=(const RPC &) = delete;
 
   void event(std::string_view);
-  void emit(std::string_view, json data);
+  void emit(std::string const &, json data);
   void reg(std::string_view, std::function<json(std::shared_ptr<rpc::io::client>, json)>);
   void unreg(std::string const &);
 
