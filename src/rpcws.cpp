@@ -5,6 +5,7 @@
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 class Buffer {
@@ -97,57 +98,78 @@ std::string_view eat(std::string_view &full, std::size_t length) {
 }
 
 wsio::wsio(std::string_view address) {
-  if (!starts_with(address, "ws://")) throw InvalidAddress();
-  auto end = address.find_first_of("[:/");
-  if (end == std::string_view::npos) throw InvalidAddress();
-  bool quoted = false;
-  if (address[end] == '[') {
-    quoted = true;
-    end    = address.find(']');
+  if (starts_with(address, "ws://")) {
+    auto end = address.find_first_of("[:/");
     if (end == std::string_view::npos) throw InvalidAddress();
-    end++;
-  }
-  auto host = eat(address, end);
-  if (quoted) {
-    host.remove_prefix(1);
-    host.remove_suffix(1);
-  }
-  std::string_view port = "80";
-  if (address[0] == ':') {
-    address.remove_prefix(1);
-    end = address.find('/');
-    if (end == std::string_view::npos) throw InvalidAddress();
-    port = eat(address, end);
-  }
-  path = eat(address, address.find_first_of("?#"));
-  {
-    std::string host_str{ host };
-    std::string port_str{ port };
-    addrinfo hints = {
-      .ai_flags    = AI_PASSIVE,
-      .ai_family   = AF_UNSPEC,
-      .ai_socktype = SOCK_STREAM,
-    };
-    addrinfo *list;
-    auto ret = getaddrinfo(host_str.c_str(), port_str.c_str(), &hints, &list);
-    if (ret != 0) throw InvalidAddress();
-    fd   = socket(family = list->ai_family, list->ai_socktype, list->ai_protocol);
-    addr = { (char *)list->ai_addr, list->ai_addrlen };
-    freeaddrinfo(list);
-    if (fd == 0) throw InvalidSocketOp("socket");
-    int yes = 1;
-    ret     = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-    if (ret != 0) throw InvalidSocketOp("setsockopt");
-    ret = bind(fd, (sockaddr *)&addr[0], addr.length());
-    if (ret != 0) throw InvalidSocketOp("bind");
-    ret = listen(fd, 0xFF);
-    if (ret != 0) throw InvalidSocketOp("listen");
-  }
+    bool quoted = false;
+    if (address[end] == '[') {
+      quoted = true;
+      end    = address.find(']');
+      if (end == std::string_view::npos) throw InvalidAddress();
+      end++;
+    }
+    auto host = eat(address, end);
+    if (quoted) {
+      host.remove_prefix(1);
+      host.remove_suffix(1);
+    }
+    std::string_view port = "80";
+    if (address[0] == ':') {
+      address.remove_prefix(1);
+      end = address.find('/');
+      if (end == std::string_view::npos) throw InvalidAddress();
+      port = eat(address, end);
+    }
+    path = eat(address, address.find_first_of("?#"));
+    {
+      std::string host_str{ host };
+      std::string port_str{ port };
+      addrinfo hints = {
+        .ai_flags    = AI_PASSIVE,
+        .ai_family   = AF_UNSPEC,
+        .ai_socktype = SOCK_STREAM,
+      };
+      addrinfo *list;
+      auto ret = getaddrinfo(host_str.c_str(), port_str.c_str(), &hints, &list);
+      if (ret != 0) throw InvalidAddress();
+      fd   = socket(list->ai_family, list->ai_socktype, list->ai_protocol);
+      std::string addr = { (char *)list->ai_addr, list->ai_addrlen };
+      freeaddrinfo(list);
+      if (fd == -1) throw InvalidSocketOp("socket");
+      int yes = 1;
+      ret     = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+      if (ret != 0) throw InvalidSocketOp("setsockopt");
+      ret = bind(fd, (sockaddr *)&addr[0], addr.length());
+      if (ret != 0) throw InvalidSocketOp("bind");
+      ret = listen(fd, 0xFF);
+      if (ret != 0) throw InvalidSocketOp("listen");
+    }
+  } else if (starts_with(address, "ws+unix://")) {
+    std::string host{address};
+    if (host.length() >= 108) throw InvalidAddress();
+    path      = "/";
+    {
+      sockaddr_un addr = {
+        .sun_family = AF_UNIX
+      };
+      memcpy(addr.sun_path, &host[0], host.length());
+      fd = socket(AF_UNIX, SOCK_STREAM, 0);
+      if (fd == -1) throw InvalidSocketOp("socket");
+      unlink(host.c_str());
+      auto ret = bind(fd, (sockaddr *)&addr, sizeof(sockaddr_un));
+      if (ret != 0) throw InvalidSocketOp("bind");
+      ret = listen(fd, 0xFF);
+      if (ret != 0) throw InvalidSocketOp("listen");
+    }
+  } else throw InvalidAddress();
   ev = eventfd(0, 0);
   if (ev == -1) throw InvalidSocketOp("eventfd");
 }
 
-wsio::~wsio() { close(fd); close(ev); }
+wsio::~wsio() {
+  close(fd);
+  close(ev);
+}
 
 struct AutoClose {
   int fd;

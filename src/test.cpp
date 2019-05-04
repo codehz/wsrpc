@@ -6,7 +6,7 @@ int main() {
   using namespace rpcws;
 
   try {
-    static RPC instance{ std::make_unique<wsio>("ws://[::]:8898/") };
+    static RPC instance{ std::make_unique<wsio>("ws+unix://./socket") };
     instance.reg("test", [](auto client, json data) -> json { return data; });
     signal(SIGINT, [](auto) { instance.stop(); });
     instance.start();

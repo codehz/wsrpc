@@ -45,8 +45,6 @@ struct wsio : io {
 
 private:
   int fd, ev;
-  int family;
-  std::string addr;
   std::string path;
 };
 
