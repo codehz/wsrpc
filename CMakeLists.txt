@@ -43,3 +43,7 @@ add_executable(rpcws_test
 )
 target_link_libraries(rpcws_test rpcws)
 set_property(TARGET rpcws_test PROPERTY CXX_STANDARD 17)
+
+install(TARGETS rpc ws rpcws
+        RUNTIME DESTINATION bin
+        LIBRARY DESTINATION lib)
