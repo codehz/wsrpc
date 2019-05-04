@@ -2,23 +2,23 @@
 
 #include <string>
 #include <string_view>
-#include <vector>
 #include <type_traits>
+#include <vector>
 
 namespace ws {
 
 using byte = unsigned char;
 
 enum class FrameType : byte {
-  EMPTY_FRAME = 0xF0,
-  ERROR_FRAME = 0xF1,
+  EMPTY_FRAME      = 0xF0,
+  ERROR_FRAME      = 0xF1,
   INCOMPLETE_FRAME = 0xF2,
-  TEXT_FRAME = 0x01,
-  BINARY_FRAME = 0x02,
-  PING_FRAME = 0x09,
-  PONG_FRAME = 0x0A,
-  OPENING_FRAME = 0xF3,
-  CLOSING_FRAME = 0x08,
+  TEXT_FRAME       = 0x01,
+  BINARY_FRAME     = 0x02,
+  PING_FRAME       = 0x09,
+  PONG_FRAME       = 0x0A,
+  OPENING_FRAME    = 0xF3,
+  CLOSING_FRAME    = 0x08,
 };
 
 enum class State {
@@ -30,9 +30,7 @@ enum class State {
 struct Input;
 struct Output;
 
-template <typename io>
-using Data = std::conditional_t<std::is_same_v<io, Input>, std::string_view,
-                                std::string>;
+template <typename io> using Data = std::conditional_t<std::is_same_v<io, Input>, std::string_view, std::string>;
 
 struct Handshake {
   FrameType type;
