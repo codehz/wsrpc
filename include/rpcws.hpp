@@ -41,6 +41,7 @@ struct wsio : io {
   wsio(std::string_view address);
   ~wsio() override;
   void accept(accept_fn) override;
+  void shutdown() override;
 
 private:
   int fd;

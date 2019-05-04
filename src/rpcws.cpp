@@ -155,6 +155,8 @@ void wsio::accept(accept_fn process) {
   }
 }
 
+void wsio::shutdown() { ::shutdown(fd, SHUT_WR); }
+
 wsio::client::client(int fd, std::string_view path)
     : fd(fd)
     , path(path) {}

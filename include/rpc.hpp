@@ -30,6 +30,7 @@ struct io {
   };
   virtual ~io() {}
   virtual void accept(accept_fn) = 0;
+  virtual void shutdown()        = 0;
 };
 
 template <class T> struct wptr_less_than {
