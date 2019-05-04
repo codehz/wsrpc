@@ -1,6 +1,8 @@
 #include <netdb.h>
 #include <rpcws.hpp>
 #include <sstream>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -141,21 +143,57 @@ wsio::wsio(std::string_view address) {
     ret = listen(fd, 0xFF);
     if (ret != 0) throw InvalidSocketOp("listen");
   }
+  ev = eventfd(0, 0);
+  if (ev == -1) throw InvalidSocketOp("eventfd");
 }
 
-wsio::~wsio() { close(fd); }
+wsio::~wsio() {
+  close(fd);
+  close(ev);
+}
+
+struct AutoClose {
+  int fd;
+  ~AutoClose() { close(fd); }
+};
 
 void wsio::accept(accept_fn process) {
+  int ep = epoll_create(1);
+  if (ep == -1) throw InvalidSocketOp("epoll_create");
+  AutoClose epc{ ep };
+  {
+    epoll_event event = { .events = EPOLLERR | EPOLLIN, .data = { .fd = ev } };
+    epoll_ctl(ep, EPOLL_CTL_ADD, ev, &event);
+  }
+  {
+    epoll_event event = { .events = EPOLLERR | EPOLLIN, .data = { .fd = fd } };
+    epoll_ctl(ep, EPOLL_CTL_ADD, fd, &event);
+  }
   while (true) {
-    sockaddr_storage ad = {};
-    socklen_t len       = sizeof(ad);
-    auto remote         = ::accept(fd, (sockaddr *)&ad, &len);
-    if (remote == -1) throw InvalidSocketOp("accept");
-    process(std::make_unique<wsio::client>(remote, path));
+    epoll_event event = {};
+
+    auto ret = epoll_wait(ep, &event, 1, -1);
+    if (ret > 0) {
+      if (event.events & EPOLLERR) break;
+      if (event.data.fd == ev) {
+        uint64_t count;
+        read(ev, &count, sizeof(count));
+        break;
+      }
+      sockaddr_storage ad = {};
+      socklen_t len       = sizeof(ad);
+      auto remote         = ::accept(fd, (sockaddr *)&ad, &len);
+      if (remote == -1) throw InvalidSocketOp("accept");
+      process(std::make_unique<wsio::client>(remote, path));
+    }
   }
 }
 
-void wsio::shutdown() { ::shutdown(fd, SHUT_WR); }
+void wsio::shutdown() {
+  uint64_t one = 1;
+  write(ev, &one, 8);
+  ::shutdown(fd, SHUT_WR);
+}
 
 wsio::client::client(int fd, std::string_view path)
     : fd(fd)

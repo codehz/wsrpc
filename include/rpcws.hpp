@@ -44,7 +44,7 @@ struct wsio : io {
   void shutdown() override;
 
 private:
-  int fd;
+  int fd, ev;
   int family;
   std::string addr;
   std::string path;

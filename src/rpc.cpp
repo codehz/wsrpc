@@ -92,9 +92,13 @@ void RPC::start() {
     std::lock_guard guard{ mtx };
     std::shared_ptr ptr = std::move(client);
     clients.emplace(ptr, std::make_unique<std::thread>([this, ptr] {
-                      ptr->recv([this, ptr](auto data) { incoming(ptr, data); });
+                      try {
+                        ptr->recv([this, ptr](auto data) { incoming(ptr, data); });
+                      } catch (std::exception &e) { std::cerr << e.what() << std::endl; }
                       std::lock_guard guard{ mtx };
-                      clients.erase(ptr);
+                      auto it = clients.find(ptr);
+                      it->second->detach();
+                      clients.erase(it);
                     }));
   });
 }
