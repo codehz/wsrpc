@@ -60,6 +60,7 @@ public:
   void unreg(std::string const &);
 
   void start();
+  void stop();
 
 private:
   void incoming(std::shared_ptr<rpc::io::client>, std::string_view);

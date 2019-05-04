@@ -63,7 +63,7 @@ void RPC::emit(std::string_view name, json data) {
   auto it = server_event_map.find(name);
   if (it != server_event_map.end()) {
     auto set = it->second;
-    auto p = set.begin();
+    auto p   = set.begin();
     auto end = set.end();
     while (p != end) {
       auto ptr = p->lock();
@@ -98,6 +98,8 @@ void RPC::start() {
                     }));
   });
 }
+
+void RPC::stop() { io->shutdown(); }
 
 struct Invalid : std::runtime_error {
   Invalid(char const *msg)
