@@ -97,7 +97,7 @@ void RPC::unreg(std::string const &name) {
 void RPC::start() {
   io->accept([this](std::unique_ptr<rpc::io::client> client) {
     std::lock_guard guard{ mtx };
-    std::shared_ptr ptr = std::move(client);
+    std::shared_ptr<rpc::io::client> ptr = std::move(client);
     clients.emplace(ptr, std::make_unique<std::thread>([this, ptr] {
                       try {
                         ptr->recv([this, ptr](auto data) { incoming(ptr, data); });
