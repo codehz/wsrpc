@@ -1,12 +1,16 @@
 #include <arpa/inet.h>
 #include <cstdio>
 #include <cstring>
+#include <experimental/iterator>
+#include <experimental/random>
 #include <iostream>
 #include <sha1.h>
 #include <sstream>
+#include <tuple>
 #include <ws.hpp>
 
-static constexpr auto rn = "\r\n";
+static constexpr auto rn       = "\r\n";
+static constexpr char secret[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 uint64_t ntohll(uint64_t val) { return (((uint64_t)ntohl(val)) << 32) + ntohl(val >> 32); }
 
@@ -107,8 +111,24 @@ Handshake parseHandshake(Data<Input> input) {
   return result;
 }
 
+std::ostream &operator<<(std::ostream &oss, Handshake const &handshake) {
+  oss << "GET " << handshake.resource << " HTTP/1.1" << rn;
+  oss << "Host: " << handshake.host << rn;
+  oss << "Origin: " << handshake.origin << rn;
+  oss << "Connection: Upgrade" << rn;
+  oss << "Upgrade: websocket" << rn;
+  oss << "Sec-WebSocket-Version: 13" << rn;
+  oss << "Sec-WebSocket-Key: " << handshake.key << rn;
+  if (!handshake.protocols.empty()) {
+    oss << "Sec-WebSocket-Protocol: ";
+    std::copy(handshake.protocols.begin(), handshake.protocols.end(), std::experimental::make_ostream_joiner(oss, ", "));
+    oss << rn;
+  }
+  oss << rn;
+  return oss;
+}
+
 Data<Output> makeHandshakeAnswer(Data<Input> key, Data<Input> protocol) {
-  static constexpr char secret[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
   std::ostringstream oss;
   byte hash[20] = { 0 };
   SHA1_CTX ctx;
@@ -126,71 +146,184 @@ Data<Output> makeHandshakeAnswer(Data<Input> key, Data<Input> protocol) {
   return oss.str();
 }
 
-uint64_t getPayloadLength(Data<Input> input, char &extraBytes, FrameType &type) {
-  uint64_t payloadLength = input[1] & 0x7f;
-  extraBytes             = 0;
-  if ((payloadLength == 0x7f && input.length() < 4) || (payloadLength == 0x7F && input.length() < 10)) {
-    type = FrameType::INCOMPLETE_FRAME;
-    return 0;
+Data<Input> parseHandshakeAnswer(Data<Input> input, Data<Input> key) {
+  auto ending = input.rfind("\r\n\r\n");
+  if (ending == std::string_view::npos) return "";
+  input.remove_suffix(input.length() - ending - 2);
+  byte hash[20] = { 0 };
+  SHA1_CTX ctx;
+  SHA1Init(&ctx);
+  SHA1Update(&ctx, (byte const *)&key[0], key.length());
+  SHA1Update(&ctx, (byte const *)secret, 36);
+  SHA1Final(hash, &ctx);
+  auto reskey = base64(std::string_view{ (char const *)hash, 20 });
+  if (!starts_with(input, "HTTP/1.1 101") != 0) return "";
+  input.remove_prefix(input.find(rn) + 2);
+
+  bool upgrade              = false;
+  bool connection           = false;
+  bool accept               = false;
+  std::string_view protocol = "";
+  while (input.length() != 0) {
+    auto end = input.find(rn);
+    if (end == std::string_view::npos) return "";
+    auto line = eat(input, end);
+    input.remove_prefix(2);
+
+    if (starts_with(line, "Upgrade: ")) {
+      if (line != "websocket") return "";
+      upgrade = true;
+    } else if (starts_with(line, "Connection: ")) {
+      if (line != "Upgrade") return "";
+      connection = true;
+    } else if (starts_with(line, "Sec-WebSocket-Accept: ")) {
+      if (line != reskey) return "";
+      connection = true;
+    } else if (starts_with(line, "Sec-Websocket-Protocol: ")) {
+      protocol = line;
+    }
   }
-  if (payloadLength == 0x7f && (input[3] & 0x80) != 0) {
-    type = FrameType::ERROR_FRAME;
-    return 0;
+  if (!upgrade || !connection) return "";
+  if (protocol.empty()) return "websocket";
+  return protocol;
+}
+
+template <typename T> network_number<T>::network_number(T value) noexcept {
+  if constexpr (std::is_same_v<T, uint16_t>) {
+    raw = htons(value);
+  } else if constexpr (std::is_same_v<T, uint64_t>) {
+    raw = htonll(value);
+  } else {
+    static_assert(std::is_same_v<T, uint16_t> || std::is_same_v<T, uint64_t>);
   }
+}
+
+template <typename T> network_number<T> &network_number<T>::operator=(T value) noexcept {
+  if constexpr (std::is_same_v<T, uint16_t>) {
+    raw = htons(value);
+  } else if constexpr (std::is_same_v<T, uint64_t>) {
+    raw = htonll(value);
+  } else {
+    static_assert(std::is_same_v<T, uint16_t> || std::is_same_v<T, uint64_t>);
+  }
+  return *this;
+}
+
+template <typename T> network_number<T>::operator T() const noexcept {
+  if constexpr (std::is_same_v<T, uint16_t>) {
+    return ntohs(raw);
+  } else if constexpr (std::is_same_v<T, uint64_t>) {
+    return ntohll(raw);
+  } else {
+    static_assert(std::is_same_v<T, uint16_t> || std::is_same_v<T, uint64_t>);
+  }
+}
+
+std::ostream &operator<<(std::ostream &stream, ws_header const &header) {
+  char buffer[2];
+  memcpy(buffer, &header, 2);
+  stream.write(buffer, 2);
+  switch (header.extra()) {
+  case 1: stream << header.payloadLength16b; break;
+  case 2: stream << header.payloadLength64b; break;
+  }
+  return stream;
+}
+
+std::tuple<uint64_t, char, FrameType> getPayloadLength(Data<Input> input, ws_header &header) {
+  uint64_t payloadLength = header.payloadLength;
+  char extraBytes        = 0;
+  if ((payloadLength == 0x7f && input.length() < 4) || (payloadLength == 0x7F && input.length() < 10)) return { 0, 0, FrameType::INCOMPLETE_FRAME };
+  if (payloadLength == 0x7f && (input[3] & 0x80) != 0) { return { 0, 0, FrameType::ERROR_FRAME }; }
   if (payloadLength == 0x7e) {
-    uint16_t payloadLength16b = 0;
-    extraBytes                = 2;
+    network_number<uint16_t> payloadLength16b = 0;
+    extraBytes                                = 2;
     memcpy(&payloadLength16b, &input[2], extraBytes);
-    payloadLength = ntohs(payloadLength16b);
+    payloadLength = payloadLength16b.get();
   } else if (payloadLength == 0x7F) {
-    uint64_t payloadLength64b = 0;
-    extraBytes                = 8;
+    network_number<uint64_t> payloadLength64b = 0;
+    extraBytes                                = 8;
     memcpy(&payloadLength64b, &input[2], extraBytes);
-    payloadLength = ntohll(payloadLength64b);
+    payloadLength = payloadLength64b.get();
   }
-  return payloadLength;
+  return { payloadLength, extraBytes, (FrameType)header.opcode };
 }
 
 Frame<Output> parseFrame(Data<Input> input) {
   if (input.length() < 2) return { FrameType::INCOMPLETE_FRAME };
-  if ((input[0] & 0x70) != 0x0 || (input[0] & 0x80) != 0x80 || (input[1] & 0x80) != 0x80) return { FrameType::ERROR_FRAME };
-  auto opcode = (FrameType)(input[0] & 0x0F);
+  ws_header header{};
+  memcpy(&header, &input[0], 2);
+  if (!header.fin || header.rsv != 0 || !header.mask) return { FrameType::ERROR_FRAME };
+  auto [payloadLength, extraBytes, opcode] = getPayloadLength(input, header);
   if (opcode == FrameType::TEXT_FRAME || opcode == FrameType::BINARY_FRAME || opcode == FrameType::CLOSING_FRAME || opcode == FrameType::PING_FRAME ||
       opcode == FrameType::PONG_FRAME) {
-    char extraBytes    = 0;
-    auto payloadLength = getPayloadLength(input, extraBytes, opcode);
-    if (opcode != FrameType::ERROR_FRAME) {
-      if (payloadLength + 6 + extraBytes > input.length()) return { FrameType::INCOMPLETE_FRAME };
-      auto masking = input.substr(2 + extraBytes, 4);
-      auto eaten   = input.length() - 6 - extraBytes;
-      Frame<Output> frame{ opcode, eaten + 6 + extraBytes, std::string(input.substr(2 + extraBytes + 4, payloadLength)) };
-      for (size_t i = 0; i < payloadLength; i++) frame.payload[i] ^= masking[i % 4];
-      return frame;
-    }
+    if (payloadLength + 6 + extraBytes > input.length()) return { FrameType::INCOMPLETE_FRAME };
+    auto masking = input.substr(2 + extraBytes, 4);
+    Frame<Output> frame{ opcode, payloadLength + 6 + extraBytes, std::string(input.substr(2 + extraBytes + 4, payloadLength)) };
+    for (size_t i = 0; i < payloadLength; i++) frame.payload[i] ^= masking[i % 4];
+    return frame;
   }
-  return { FrameType::ERROR_FRAME };
+  return { opcode };
 }
 
-Data<Output> makeFrame(Frame<Input> frame) {
-  std::ostringstream oss;
-  oss << (char)((char)frame.type | 0x80);
-  const auto dataLength = frame.payload.length();
-  if (dataLength < 125) {
-    oss << (char)dataLength;
-  } else if (dataLength <= 0xFFFF) {
-    oss << (char)126;
-    uint16_t payloadLength16b = htons(dataLength);
-    char buf[2];
-    memcpy(buf, &payloadLength16b, 2);
-    oss << std::string_view{ buf, 2 };
-  } else {
-    oss << (char)127;
-    uint16_t payloadLength64b = htonll(dataLength);
-    char buf[8];
-    memcpy(buf, &payloadLength64b, 8);
-    oss << std::string_view{ buf, 8 };
+Frame<Input> parseServerFrame(Data<Input> input) {
+  if (input.length() < 2) return { FrameType::INCOMPLETE_FRAME };
+  ws_header header{};
+  memcpy(&header, &input[0], 2);
+  if (!header.fin || header.rsv != 0 || header.mask) return { FrameType::ERROR_FRAME };
+  auto [payloadLength, extraBytes, opcode] = getPayloadLength(input, header);
+  if (opcode == FrameType::TEXT_FRAME || opcode == FrameType::BINARY_FRAME || opcode == FrameType::CLOSING_FRAME || opcode == FrameType::PING_FRAME ||
+      opcode == FrameType::PONG_FRAME) {
+    if (payloadLength + 2 + extraBytes > input.length()) return { FrameType::INCOMPLETE_FRAME };
+    Frame<Input> frame{ opcode, payloadLength + 2 + extraBytes, input.substr(2 + extraBytes, payloadLength) };
+    return frame;
   }
-  oss << frame.payload;
+  return { opcode };
+}
+
+ws_header makeFrameHeader(Frame<Input> frame, bool mask) {
+  ws_header header{ {
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+      .opcode = (uint8_t)frame.type,
+      .rsv    = 0,
+      .fin    = true,
+      .mask   = mask,
+#elif __BYTE_ORDER == __BIG_ENDIAN
+      .fin    = true,
+      .rsv    = 0,
+      .opcode = (uint8_t)frame.type,
+      .mask   = mask,
+#endif
+  } };
+  const auto dataLength = frame.payload.length();
+  if (dataLength < 0x7e) {
+    header.payloadLength = dataLength;
+  } else if (dataLength <= 0xFFFF) {
+    header.payloadLength    = 0x7e;
+    header.payloadLength16b = dataLength;
+  } else {
+    header.payloadLength    = 0x7f;
+    header.payloadLength64b = dataLength;
+  }
+  return header;
+}
+
+Data<Output> makeFrame(Frame<Input> frame, bool mask) {
+  std::ostringstream oss;
+  oss << makeFrameHeader(frame, mask);
+  if (mask) {
+    auto mask = std::experimental::randint(0u, UINT32_MAX);
+    char maskbuf[4];
+    memcpy(maskbuf, &mask, 4);
+    oss.write(maskbuf, 4);
+    size_t i = 0;
+    for (auto ch : frame.payload) {
+      char temp = ch ^ maskbuf[i++ % 4];
+      oss.write(&temp, 1);
+    }
+  } else {
+    oss << frame.payload;
+  }
   return oss.str();
 }
 
