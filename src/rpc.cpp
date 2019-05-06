@@ -162,4 +162,76 @@ void RPC::incoming(std::shared_ptr<server_io::client> client, std::string_view d
   }
 }
 
+RPC::Client::Client(std::unique_ptr<client_io> &&io)
+    : io(std::move(io)) {}
+
+RPC::Client::~Client() { io->shutdown(); }
+
+promise<json> RPC::Client::call(std::string_view name, json data) {
+  return { [=](auto resolver) {
+    auto req = json::object({ { "jsonrpc", "2.0" }, { "method", name }, { "params", data }, { "id", last_id } });
+    {
+      std::lock_guard guard{ mtx };
+      regmap.emplace(last_id++, resolver);
+    }
+    io->send(req.dump());
+  } };
+}
+
+void RPC::Client::notify(std::string_view name, json data) {
+  auto req = json::object({ { "jsonrpc", "2.0" }, { "method", name }, { "params", data } });
+  io->send(req.dump());
+}
+
+promise<bool> RPC::Client::on(std::string_view name, RPC::Client::data_fn list) {
+  event_map.emplace(name, list);
+  return call("rpc.on", json::array({ "name" })).then<bool>([](json ret) { return ret.is_array() && ret.size() == 1 && ret[0] == "ok"; });
+}
+
+promise<bool> RPC::Client::off(std::string const &name) {
+  event_map.erase(name);
+  return call("rpc.off", json::array({ "name" })).then<bool>([](json ret) { return ret.is_array() && ret.size() == 1 && ret[0] == "ok"; });
+}
+
+void RPC::Client::incoming(std::string_view data) {
+  try {
+    auto parsed = json::parse(data);
+    if (!parsed.is_object()) throw Invalid{ "object required" };
+    if (parsed.contains("notification")) {
+      auto name = parsed["notification"].get<std::string>();
+      std::lock_guard guard{ mtx };
+      if (auto it = event_map.find(name); it != event_map.end()) {
+        auto &[k, fn] = *it;
+        fn(parsed["params"]);
+      }
+    } else {
+      if (parsed["jsonrpc"] != "2.0") throw Invalid{ "jsonrpc version mismatch" };
+      auto result = parsed["result"];
+      auto error  = parsed["error"];
+      auto id     = parsed["id"];
+
+      std::lock_guard guard{ mtx };
+      if (auto it = regmap.find(id.get<unsigned>()); it != regmap.end()) {
+        auto &[_, resolver] = *it;
+        if (error.is_object()) {
+          resolver.reject(RemoteException{ error });
+        } else {
+          resolver.resolve(result);
+        }
+        regmap.erase(it);
+      }
+    }
+  } catch (std::exception &e) {
+    std::cerr << e.what() << std::endl;
+    std::lock_guard guard{ mtx };
+    io->shutdown();
+  }
+}
+
+promise<void> RPC::Client::start() {
+  return { [this](auto resolver) { this->io->recv([=](auto data) { incoming(data); }, resolver); } };
+}
+
+void RPC::Client::stop() { this->io->shutdown(); }
+
 } // namespace rpc

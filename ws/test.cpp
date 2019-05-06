@@ -166,7 +166,10 @@ void process(int fd) {
         }
         return;
       case FrameType::PING_FRAME: safeSend(fd, makeFrame({ FrameType::PONG_FRAME })); break;
-      case FrameType::TEXT_FRAME: safeSend(fd, makeFrame({ FrameType::TEXT_FRAME, oframe.payload })); break;
+      case FrameType::TEXT_FRAME:
+        std::cout << "recv: " << oframe.payload << std::endl;
+        safeSend(fd, makeFrame({ FrameType::TEXT_FRAME, oframe.payload }));
+        break;
       default: break;
       }
       type = FrameType::INCOMPLETE_FRAME;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "promise.hpp"
 #include <functional>
 #include <json.hpp>
 #include <map>
@@ -8,7 +9,6 @@
 #include <set>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 namespace rpc {
@@ -17,6 +17,15 @@ using json = nlohmann::json;
 struct InvalidParams : std::runtime_error {
   inline InvalidParams()
       : runtime_error("invalid params") {}
+};
+
+struct RemoteException : std::runtime_error {
+  int code;
+  json data;
+  inline RemoteException(json ex)
+      : runtime_error(ex["message"].get<std::string>())
+      , code(ex["code"].get<int>())
+      , data(ex["data"]) {}
 };
 
 struct server_io {
@@ -28,9 +37,18 @@ struct server_io {
     virtual void shutdown()             = 0;
     virtual void send(std::string_view) = 0;
   };
-  virtual ~server_io() {}
-  virtual void accept(accept_fn, recv_fn) = 0;
+  inline virtual ~server_io() {}
   virtual void shutdown()                 = 0;
+  virtual void accept(accept_fn, recv_fn) = 0;
+};
+
+struct client_io {
+  using recv_fn = std::function<void(std::string_view)>;
+
+  inline virtual ~client_io(){};
+  virtual void shutdown()                             = 0;
+  virtual void recv(recv_fn, promise<void>::resolver) = 0;
+  virtual void send(std::string_view)                 = 0;
 };
 
 template <class T> struct wptr_less_than {
@@ -60,6 +78,36 @@ public:
 
   void start();
   void stop();
+
+  class Client {
+  public:
+    using data_fn = std::function<void(json)>;
+
+  private:
+    std::recursive_mutex mtx;
+    std::unique_ptr<client_io> io;
+    std::map<std::string, data_fn> event_map;
+    std::map<unsigned, promise<json>::resolver> regmap;
+    unsigned last_id;
+
+  public:
+    Client(decltype(io) &&io);
+    ~Client();
+
+    Client(const Client &) = delete;
+    Client &operator=(const Client &) = delete;
+
+    promise<json> call(std::string_view name, json data);
+    void notify(std::string_view name, json data);
+    promise<bool> on(std::string_view name, data_fn);
+    promise<bool> off(std::string const &name);
+
+    promise<void> start();
+    void stop();
+
+  private:
+    void incoming(std::string_view);
+  };
 
 private:
   void incoming(std::shared_ptr<server_io::client>, std::string_view);

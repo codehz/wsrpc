@@ -28,6 +28,16 @@ public:
 class RecvFailed : public CommonException {};
 class SendFailed : public CommonException {};
 
+class HandshakeFailed : public std::runtime_error {
+public:
+  HandshakeFailed();
+};
+
+class InvalidFrame : public std::runtime_error {
+public:
+  InvalidFrame();
+};
+
 class Buffer {
   char *start     = nullptr;
   char *head      = nullptr;
@@ -75,6 +85,19 @@ private:
   int fd, ev, ep;
   std::map<int, std::shared_ptr<client>> fdmap;
   std::string path;
+};
+
+struct client_wsio : client_io {
+  client_wsio(std::string_view address);
+  void shutdown() override;
+  void recv(recv_fn, promise<void>::resolver) override;
+  void send(std::string_view) override;
+
+private:
+  int fd, ev;
+  std::string path, key;
+  Buffer buffer;
+  State state;
 };
 
 } // namespace rpcws

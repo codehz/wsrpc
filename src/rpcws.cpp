@@ -1,3 +1,4 @@
+#include <experimental/random>
 #include <netdb.h>
 #include <rpcws.hpp>
 #include <sstream>
@@ -69,6 +70,12 @@ InvalidSocketOp::InvalidSocketOp(char const *msg)
 
 CommonException::CommonException()
     : std::runtime_error(strerror(errno)) {}
+
+HandshakeFailed::HandshakeFailed()
+    : std::runtime_error("handshake failed") {}
+
+InvalidFrame::InvalidFrame()
+    : std::runtime_error("invalid frame") {}
 
 void safeSend(int fd, std::string_view data) {
   while (!data.empty()) {
@@ -230,7 +237,8 @@ void server_wsio::shutdown() {
 server_wsio::client::client(int fd, std::string_view path)
     : fd(fd)
     , path(path)
-    , type(FrameType::INCOMPLETE_FRAME) {}
+    , type(FrameType::INCOMPLETE_FRAME)
+    , state(State::STATE_OPENING) {}
 
 server_wsio::client::~client() { close(fd); }
 
@@ -309,5 +317,172 @@ server_wsio::client::result server_wsio::client::handle(server_wsio::recv_fn &pr
 }
 
 void server_wsio::client::send(std::string_view data) { safeSend(fd, makeFrame({ FrameType::TEXT_FRAME, data })); }
+
+std::string base64(std::string_view input) {
+  constexpr char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+
+  int val = 0, valb = -6;
+  for (unsigned char c : input) {
+    val = (val << 8) + c;
+    valb += 8;
+    while (valb >= 0) {
+      out.push_back(t[(val >> valb) & 0x3F]);
+      valb -= 6;
+    }
+  }
+  if (valb > -6) out.push_back(t[((val << 8) >> (valb + 8)) & 0x3F]);
+  while (out.size() % 4) out.push_back('=');
+  return out;
+}
+
+client_wsio::client_wsio(std::string_view address) {
+  std::string hoststr;
+  if (starts_with(address, "ws://")) {
+    auto end = address.find_first_of("[:/");
+    if (end == std::string_view::npos) throw InvalidAddress();
+    bool quoted = false;
+    if (address[end] == '[') {
+      quoted = true;
+      end    = address.find(']');
+      if (end == std::string_view::npos) throw InvalidAddress();
+      end++;
+    }
+    auto host = eat(address, end);
+    if (quoted) {
+      host.remove_prefix(1);
+      host.remove_suffix(1);
+    }
+    hoststr               = host;
+    std::string_view port = "80";
+    if (address[0] == ':') {
+      address.remove_prefix(1);
+      end = address.find('/');
+      if (end == std::string_view::npos) throw InvalidAddress();
+      port = eat(address, end);
+    }
+    path = eat(address, address.find_first_of("?#"));
+    {
+      std::string host_str{ host };
+      std::string port_str{ port };
+      addrinfo hints = {
+        .ai_flags    = AI_PASSIVE,
+        .ai_family   = AF_UNSPEC,
+        .ai_socktype = SOCK_STREAM,
+      };
+      addrinfo *list;
+      auto ret = getaddrinfo(host_str.c_str(), port_str.c_str(), &hints, &list);
+      if (ret != 0) throw InvalidAddress();
+      fd               = socket(list->ai_family, list->ai_socktype, list->ai_protocol);
+      std::string addr = { (char *)list->ai_addr, list->ai_addrlen };
+      freeaddrinfo(list);
+      if (fd == -1) throw InvalidSocketOp("socket");
+      ret = connect(fd, (sockaddr *)&addr[0], addr.length());
+      if (ret == -1) throw InvalidSocketOp("connect");
+    }
+  } else if (starts_with(address, "ws+unix://")) {
+    hoststr = address;
+    if (hoststr.length() >= 108) throw InvalidAddress();
+    path = "/";
+    {
+      sockaddr_un addr = { .sun_family = AF_UNIX };
+      memcpy(addr.sun_path, &hoststr[0], hoststr.length());
+      fd = socket(AF_UNIX, SOCK_STREAM, 0);
+      if (fd == -1) throw InvalidSocketOp("socket");
+      auto ret = connect(fd, (sockaddr *)&addr, sizeof(sockaddr_un));
+      if (ret == -1) throw InvalidSocketOp("connect");
+    }
+  } else
+    throw InvalidAddress();
+  ev = eventfd(0, 0);
+  if (ev == -1) throw InvalidSocketOp("eventfd");
+
+  union {
+    uint64_t u2[2] = { std::experimental::randint(0ul, UINT64_MAX), std::experimental::randint(0ul, UINT64_MAX) };
+    char b16[16];
+  };
+
+  key = base64(b16);
+
+  {
+    auto handshake = makeHandshake({
+        .type     = FrameType::OPENING_FRAME,
+        .host     = hoststr,
+        .origin   = hoststr,
+        .key      = key,
+        .resource = path,
+    });
+    safeSend(fd, handshake);
+  }
+}
+
+void client_wsio::shutdown() {
+  uint64_t one = 1;
+  write(ev, &one, 8);
+  ::shutdown(fd, SHUT_RDWR);
+}
+
+void client_wsio::recv(recv_fn rcv, promise<void>::resolver resolver) {
+  int ep = epoll_create(1);
+  if (ep == -1) return resolver.reject(InvalidSocketOp("epoll_create"));
+  AutoClose epc{ ep };
+  {
+    epoll_event event = { .events = EPOLLERR | EPOLLIN, .data = { .fd = ev } };
+    epoll_ctl(ep, EPOLL_CTL_ADD, ev, &event);
+  }
+  {
+    epoll_event event = { .events = EPOLLERR | EPOLLIN, .data = { .fd = fd } };
+    epoll_ctl(ep, EPOLL_CTL_ADD, fd, &event);
+  }
+  while (true) {
+    epoll_event event = {};
+
+    auto ret = epoll_wait(ep, &event, 1, -1);
+    if (ret > 0) {
+      if (event.data.fd == ev) {
+        uint64_t count;
+        read(ev, &count, sizeof(count));
+        break;
+      }
+      if (event.events & EPOLLERR) return resolver.reject(InvalidSocketOp("epoll_wait"));
+      ssize_t readed = ::recv(fd, buffer.allocate(0xFFFF), 0xFFFF, 0);
+      if (readed == 0) break;
+      if (readed == -1) return resolver.reject(RecvFailed());
+      buffer.eat(readed);
+
+      Frame<Input> oframe;
+      FrameType type = FrameType::INCOMPLETE_FRAME;
+
+      if (state == State::STATE_OPENING) {
+        if (parseHandshakeAnswer(buffer, key).empty()) return resolver.reject(HandshakeFailed{});
+        resolver.resolve();
+        state = State::STATE_NORMAL;
+        buffer.reset();
+        continue;
+      } else {
+      midpoint:
+        oframe = parseServerFrame(buffer);
+        type   = oframe.type;
+      }
+
+      switch (type) {
+      case FrameType::ERROR_FRAME: return resolver.reject(InvalidFrame{});
+      case FrameType::CLOSING_FRAME: goto out;
+      case FrameType::PING_FRAME: safeSend(fd, makeFrame({ FrameType::PONG_FRAME }, true)); break;
+      case FrameType::TEXT_FRAME: rcv(oframe.payload); break;
+      default: break;
+      }
+      buffer.drop(oframe.eaten);
+      if (buffer.length()) goto midpoint;
+    }
+  }
+out:
+  return;
+}
+
+void client_wsio::send(std::string_view data) {
+  auto frame = makeFrame({ FrameType::TEXT_FRAME, data }, true);
+  safeSend(fd, frame);
+}
 
 } // namespace rpcws
