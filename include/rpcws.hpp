@@ -47,9 +47,9 @@ public:
   ~Buffer();
 };
 
-struct wsio : io {
+struct server_wsio : server_io {
   using cancel_fn = std::function<void(int)>;
-  struct client : io::client, std::enable_shared_from_this<client> {
+  struct client : server_io::client, std::enable_shared_from_this<client> {
     enum struct result { EMPTY, ACCEPT, STOPPED };
 
     client(int, std::string_view);
@@ -66,8 +66,8 @@ struct wsio : io {
     Buffer buffer;
   };
 
-  wsio(std::string_view address);
-  ~wsio() override;
+  server_wsio(std::string_view address);
+  ~server_wsio() override;
   void accept(accept_fn, recv_fn rcv) override;
   void shutdown() override;
 

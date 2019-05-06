@@ -90,7 +90,7 @@ std::string_view eat(std::string_view &full, std::size_t length) {
   return ret;
 }
 
-wsio::wsio(std::string_view address) {
+server_wsio::server_wsio(std::string_view address) {
   if (starts_with(address, "ws://")) {
     auto end = address.find_first_of("[:/");
     if (end == std::string_view::npos) throw InvalidAddress();
@@ -158,7 +158,7 @@ wsio::wsio(std::string_view address) {
   if (ev == -1) throw InvalidSocketOp("eventfd");
 }
 
-wsio::~wsio() {
+server_wsio::~server_wsio() {
   close(fd);
   close(ev);
 }
@@ -168,7 +168,7 @@ struct AutoClose {
   ~AutoClose() { close(fd); }
 };
 
-void wsio::accept(accept_fn process, recv_fn rcv) {
+void server_wsio::accept(accept_fn process, recv_fn rcv) {
   int ep = epoll_create(1);
   if (ep == -1) throw InvalidSocketOp("epoll_create");
   AutoClose epc{ ep };
@@ -195,7 +195,7 @@ void wsio::accept(accept_fn process, recv_fn rcv) {
         socklen_t len       = sizeof(ad);
         auto remote         = ::accept(fd, (sockaddr *)&ad, &len);
         if (remote == -1) throw InvalidSocketOp("accept");
-        fdmap[remote] = std::make_shared<wsio::client>(remote, path);
+        fdmap[remote] = std::make_shared<server_wsio::client>(remote, path);
         {
           epoll_event event = { .events = EPOLLERR | EPOLLIN, .data = { .fd = remote } };
           epoll_ctl(ep, EPOLL_CTL_ADD, remote, &event);
@@ -221,25 +221,25 @@ void wsio::accept(accept_fn process, recv_fn rcv) {
   }
 }
 
-void wsio::shutdown() {
+void server_wsio::shutdown() {
   uint64_t one = 1;
   write(ev, &one, 8);
   ::shutdown(fd, SHUT_WR);
 }
 
-wsio::client::client(int fd, std::string_view path)
+server_wsio::client::client(int fd, std::string_view path)
     : fd(fd)
     , path(path)
     , type(FrameType::INCOMPLETE_FRAME) {}
 
-wsio::client::~client() { close(fd); }
+server_wsio::client::~client() { close(fd); }
 
-void wsio::client::shutdown() {
+void server_wsio::client::shutdown() {
   ::shutdown(fd, SHUT_WR);
   close(fd);
 }
 
-wsio::client::result wsio::client::handle(wsio::recv_fn &process) {
+server_wsio::client::result server_wsio::client::handle(server_wsio::recv_fn &process) {
   Handshake hs;
   Frame<Output> oframe;
 
@@ -308,6 +308,6 @@ wsio::client::result wsio::client::handle(wsio::recv_fn &process) {
   return result::EMPTY;
 }
 
-void wsio::client::send(std::string_view data) { safeSend(fd, makeFrame({ FrameType::TEXT_FRAME, data })); }
+void server_wsio::client::send(std::string_view data) { safeSend(fd, makeFrame({ FrameType::TEXT_FRAME, data })); }
 
 } // namespace rpcws

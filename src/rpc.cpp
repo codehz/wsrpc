@@ -6,7 +6,7 @@ namespace rpc {
 
 RPC::RPC(decltype(io) &&io)
     : io(std::move(io)) {
-  reg("rpc.on", [this](std::shared_ptr<rpc::io::client> client, json input) -> json {
+  reg("rpc.on", [this](std::shared_ptr<server_io::client> client, json input) -> json {
     if (input.is_array()) {
       std::map<std::string, std::string> lists;
       for (auto item : input) {
@@ -26,7 +26,7 @@ RPC::RPC(decltype(io) &&io)
     } else
       throw InvalidParams{};
   });
-  reg("rpc.off", [this](std::shared_ptr<rpc::io::client> client, json input) -> json {
+  reg("rpc.off", [this](std::shared_ptr<server_io::client> client, json input) -> json {
     if (input.is_array()) {
       std::map<std::string, std::string> lists;
       for (auto item : input) {
@@ -77,7 +77,7 @@ void RPC::emit(std::string const &name, json data) {
   }
 }
 
-void RPC::reg(std::string_view name, std::function<json(std::shared_ptr<rpc::io::client>, json)> cb) {
+void RPC::reg(std::string_view name, std::function<json(std::shared_ptr<server_io::client>, json)> cb) {
   std::lock_guard guard{ mtx };
   methods.emplace(name, cb);
 }
@@ -103,7 +103,7 @@ struct NotFound : std::runtime_error {
       : runtime_error("method not found") {}
 };
 
-void RPC::incoming(std::shared_ptr<rpc::io::client> client, std::string_view data) {
+void RPC::incoming(std::shared_ptr<server_io::client> client, std::string_view data) {
   try {
     auto parsed = json::parse(data);
     if (!parsed.is_object()) throw Invalid{ "object required" };
