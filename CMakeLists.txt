@@ -54,7 +54,7 @@ add_executable(rpcwsc_test
 target_link_libraries(rpcwsc_test rpcws pthread)
 set_property(TARGET rpcwsc_test PROPERTY CXX_STANDARD 17)
 
-install(TARGETS rpc ws rpcws
+install(TARGETS rpc ws rpcws minsec
         RUNTIME DESTINATION bin
         LIBRARY DESTINATION lib)
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
