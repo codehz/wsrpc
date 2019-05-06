@@ -398,7 +398,7 @@ client_wsio::client_wsio(std::string_view address) {
   if (ev == -1) throw InvalidSocketOp("eventfd");
 
   union {
-    uint64_t u2[2] = { std::experimental::randint(0ul, UINT64_MAX), std::experimental::randint(0ul, UINT64_MAX) };
+    uint64_t u2[2] = { std::experimental::randint((uint64_t)0, UINT64_MAX), std::experimental::randint((uint64_t)0, UINT64_MAX) };
     char b16[16];
   };
 
