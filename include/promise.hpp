@@ -43,11 +43,7 @@ public:
     return *this;
   }
   template <typename R> promise<R> then(transform_fn<R> fn) {
-    return { [=](auto th, auto fa) {
-      _fail = fa;
-      _then = [=](T const &t) { th(fn(t)); };
-      this->operator()();
-    } };
+    return { [=, next = body](auto th, auto fa) { next([=](T const &t) { th(fn(t)); }, fa); } };
   }
   promise<T> &fail(fail_fn) {
     this->_fail = _fail;
