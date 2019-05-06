@@ -3,6 +3,8 @@
 #include "rpc.hpp"
 #include "ws.hpp"
 #include <exception>
+#include <map>
+#include <memory>
 #include <vector>
 
 namespace rpcws {
@@ -26,26 +28,52 @@ public:
 class RecvFailed : public CommonException {};
 class SendFailed : public CommonException {};
 
+class Buffer {
+  char *start     = nullptr;
+  char *head      = nullptr;
+  char *allocated = nullptr;
+
+public:
+  Buffer();
+  char *allocate(size_t size);
+  void eat(size_t size);
+  void drop(size_t size);
+  void reset();
+  char *begin() const;
+  char *end() const;
+  size_t length() const;
+  std::string_view view() const;
+  operator std::string_view() const;
+  ~Buffer();
+};
+
 struct wsio : io {
-  struct client : io::client {
+  using cancel_fn = std::function<void(int)>;
+  struct client : io::client, std::enable_shared_from_this<client> {
+    enum struct result { EMPTY, ACCEPT, STOPPED };
+
     client(int, std::string_view);
     ~client() override;
     void shutdown() override;
-    void recv(recv_fn) override;
     void send(std::string_view) override;
+    result handle(recv_fn &);
 
   private:
     int fd;
     std::string_view path;
+    State state;
+    FrameType type;
+    Buffer buffer;
   };
 
   wsio(std::string_view address);
   ~wsio() override;
-  void accept(accept_fn) override;
+  void accept(accept_fn, recv_fn rcv) override;
   void shutdown() override;
 
 private:
-  int fd, ev;
+  int fd, ev, ep;
+  std::map<int, std::shared_ptr<client>> fdmap;
   std::string path;
 };
 

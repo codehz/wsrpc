@@ -21,17 +21,16 @@ struct InvalidParams : std::runtime_error {
 
 struct io {
   struct client;
-  using recv_fn   = std::function<void(std::string_view)>;
-  using accept_fn = std::function<void(std::unique_ptr<client>)>;
+  using recv_fn   = std::function<void(std::shared_ptr<client>, std::string_view)>;
+  using accept_fn = std::function<void(std::shared_ptr<client>)>;
   struct client {
     inline virtual ~client(){};
     virtual void shutdown()             = 0;
-    virtual void recv(recv_fn)          = 0;
     virtual void send(std::string_view) = 0;
   };
   virtual ~io() {}
-  virtual void accept(accept_fn) = 0;
-  virtual void shutdown()        = 0;
+  virtual void accept(accept_fn, recv_fn) = 0;
+  virtual void shutdown()                 = 0;
 };
 
 template <class T> struct wptr_less_than {
@@ -43,7 +42,6 @@ template <class T> struct wptr_less_than {
 class RPC {
   std::recursive_mutex mtx;
   std::unique_ptr<rpc::io> io;
-  std::map<std::shared_ptr<rpc::io::client>, std::unique_ptr<std::thread>> clients;
   std::map<std::string, std::function<json(std::shared_ptr<rpc::io::client>, json)>> methods;
   std::vector<std::string> server_events;
   std::map<std::string, std::set<std::weak_ptr<rpc::io::client>, wptr_less_than<rpc::io::client>>> server_event_map;

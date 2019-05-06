@@ -38,7 +38,7 @@ add_library(rpcws
   src/rpcws.cpp
   include/rpcws.hpp
 )
-target_link_libraries(rpcws rpc ws pthread)
+target_link_libraries(rpcws rpc ws)
 target_include_directories(rpcws PUBLIC include)
 set_property(TARGET rpcws PROPERTY CXX_STANDARD 17)
 

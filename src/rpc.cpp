@@ -50,14 +50,7 @@ RPC::RPC(decltype(io) &&io)
   });
 }
 
-RPC::~RPC() {
-  std::lock_guard guard{ mtx };
-
-  for (auto &[client, thread] : clients) {
-    thread->detach();
-    client->shutdown();
-  }
-}
+RPC::~RPC() {}
 
 void RPC::event(std::string_view name) {
   std::lock_guard guard{ mtx };
@@ -95,19 +88,7 @@ void RPC::unreg(std::string const &name) {
 }
 
 void RPC::start() {
-  io->accept([this](std::unique_ptr<rpc::io::client> client) {
-    std::lock_guard guard{ mtx };
-    std::shared_ptr<rpc::io::client> ptr = std::move(client);
-    clients.emplace(ptr, std::make_unique<std::thread>([this, ptr] {
-                      try {
-                        ptr->recv([this, ptr](auto data) { incoming(ptr, data); });
-                      } catch (std::exception &e) { std::cerr << e.what() << std::endl; }
-                      std::lock_guard guard{ mtx };
-                      auto it = clients.find(ptr);
-                      it->second->detach();
-                      clients.erase(it);
-                    }));
-  });
+  io->accept([](auto...) {}, [this](auto... x) { incoming(x...); });
 }
 
 void RPC::stop() { io->shutdown(); }

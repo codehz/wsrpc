@@ -8,65 +8,58 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-class Buffer {
-  char *start     = nullptr;
-  char *head      = nullptr;
-  char *allocated = nullptr;
-
-public:
-  Buffer() {}
-
-  char *allocate(size_t size) {
-    if (start) {
-      if (allocated - head < size) {
-        auto temp       = new char[allocated - start + size];
-        auto nstart     = temp;
-        auto nend       = temp + (head - start);
-        auto nallocated = temp + (allocated - start) + size;
-        delete[] start;
-        start     = nstart;
-        head      = nend;
-        allocated = nallocated;
-      }
-    } else {
-      start     = new char[size];
-      head      = start;
-      allocated = start + size;
-    }
-    return head;
-  }
-
-  void eat(size_t size) { head += size; }
-
-  void drop(size_t size) {
-    if (!size) return;
-    if (size == head - start) {
-      head = start;
-    } else {
-      head -= size;
-      memmove(start, start + size, head - start);
-    }
-  }
-
-  void reset() {
-    delete[] start;
-    start = head = allocated = nullptr;
-  }
-
-  char *begin() const { return start; }
-
-  char *end() const { return head; }
-
-  size_t length() const { return head - start; }
-
-  std::string_view view() const { return { start, length() }; }
-
-  operator std::string_view() const { return view(); }
-
-  ~Buffer() { delete[] start; }
-};
-
 namespace rpcws {
+
+Buffer::Buffer() {}
+
+char *Buffer::allocate(size_t size) {
+  if (start) {
+    if (allocated - head < size) {
+      auto temp       = new char[allocated - start + size];
+      auto nstart     = temp;
+      auto nend       = temp + (head - start);
+      auto nallocated = temp + (allocated - start) + size;
+      delete[] start;
+      start     = nstart;
+      head      = nend;
+      allocated = nallocated;
+    }
+  } else {
+    start     = new char[size];
+    head      = start;
+    allocated = start + size;
+  }
+  return head;
+}
+
+void Buffer::eat(size_t size) { head += size; }
+
+void Buffer::drop(size_t size) {
+  if (!size) return;
+  if (size == head - start) {
+    head = start;
+  } else {
+    head -= size;
+    memmove(start, start + size, head - start);
+  }
+}
+
+void Buffer::reset() {
+  delete[] start;
+  start = head = allocated = nullptr;
+}
+
+char *Buffer::begin() const { return start; }
+
+char *Buffer::end() const { return head; }
+
+size_t Buffer::length() const { return head - start; }
+
+std::string_view Buffer::view() const { return { start, length() }; }
+
+Buffer::operator std::string_view() const { return view(); }
+
+Buffer::~Buffer() { delete[] start; }
 
 InvalidAddress::InvalidAddress()
     : std::runtime_error("") {}
@@ -175,7 +168,7 @@ struct AutoClose {
   ~AutoClose() { close(fd); }
 };
 
-void wsio::accept(accept_fn process) {
+void wsio::accept(accept_fn process, recv_fn rcv) {
   int ep = epoll_create(1);
   if (ep == -1) throw InvalidSocketOp("epoll_create");
   AutoClose epc{ ep };
@@ -192,17 +185,38 @@ void wsio::accept(accept_fn process) {
 
     auto ret = epoll_wait(ep, &event, 1, -1);
     if (ret > 0) {
-      if (event.events & EPOLLERR) break;
       if (event.data.fd == ev) {
         uint64_t count;
         read(ev, &count, sizeof(count));
         break;
+      } else if (event.data.fd == fd) {
+        if (event.events & EPOLLERR) break;
+        sockaddr_storage ad = {};
+        socklen_t len       = sizeof(ad);
+        auto remote         = ::accept(fd, (sockaddr *)&ad, &len);
+        if (remote == -1) throw InvalidSocketOp("accept");
+        fdmap[remote] = std::make_shared<wsio::client>(remote, path);
+        {
+          epoll_event event = { .events = EPOLLERR | EPOLLIN, .data = { .fd = remote } };
+          epoll_ctl(ep, EPOLL_CTL_ADD, remote, &event);
+        }
+      } else if (auto it = fdmap.find(event.data.fd); it != fdmap.end()) {
+        auto &[remote, client] = *it;
+        try {
+          if (event.events & EPOLLERR) {
+            throw InvalidSocketOp("epoll");
+          } else {
+            switch (client->handle(rcv)) {
+            case client::result::ACCEPT: process(client); break;
+            case client::result::STOPPED: throw CommonException();
+            case client::result::EMPTY: break;
+            }
+          }
+        } catch (std::runtime_error &e) {
+          epoll_ctl(remote, EPOLL_CTL_DEL, remote, nullptr);
+          fdmap.erase(it);
+        }
       }
-      sockaddr_storage ad = {};
-      socklen_t len       = sizeof(ad);
-      auto remote         = ::accept(fd, (sockaddr *)&ad, &len);
-      if (remote == -1) throw InvalidSocketOp("accept");
-      process(std::make_unique<wsio::client>(remote, path));
     }
   }
 }
@@ -215,7 +229,8 @@ void wsio::shutdown() {
 
 wsio::client::client(int fd, std::string_view path)
     : fd(fd)
-    , path(path) {}
+    , path(path)
+    , type(FrameType::INCOMPLETE_FRAME) {}
 
 wsio::client::~client() { close(fd); }
 
@@ -224,77 +239,73 @@ void wsio::client::shutdown() {
   close(fd);
 }
 
-void wsio::client::recv(recv_fn process) {
-  State state    = State::STATE_OPENING;
-  FrameType type = FrameType::INCOMPLETE_FRAME;
-  Frame<Output> oframe;
+wsio::client::result wsio::client::handle(wsio::recv_fn &process) {
   Handshake hs;
-  Buffer buffer;
+  Frame<Output> oframe;
 
-  while (type == FrameType::INCOMPLETE_FRAME) {
-    ssize_t readed = ::recv(fd, buffer.allocate(0xFFFF), 0xFFFF, 0);
-    if (!readed) return;
-    if (readed == -1) { throw RecvFailed(); }
+  if (type != FrameType::INCOMPLETE_FRAME) return result::STOPPED;
+  ssize_t readed = ::recv(fd, buffer.allocate(0xFFFF), 0xFFFF, 0);
+  if (readed == 0) return result::STOPPED;
+  if (readed == -1) { throw RecvFailed(); }
+  buffer.eat(readed);
 
-    buffer.eat(readed);
+  if (state == State::STATE_OPENING) {
+    hs   = parseHandshake(buffer);
+    type = hs.type;
+  } else {
+  midpoint:
+    oframe = parseFrame(buffer);
+    type   = oframe.type;
+  }
 
+  if (type == FrameType::ERROR_FRAME) {
     if (state == State::STATE_OPENING) {
-      hs   = parseHandshake(buffer);
-      type = hs.type;
+      std::ostringstream oss;
+      oss << "HTTP/1.1 400 Bad Request\r\n"
+          << "Sec-WebSocket-Version: 13\r\n\r\n";
+      safeSend(fd, oss.str());
+      return result::STOPPED;
     } else {
-    midpoint:
-      oframe = parseFrame(buffer);
-      type   = oframe.type;
-    }
-
-    if (type == FrameType::ERROR_FRAME) {
-      if (state == State::STATE_OPENING) {
-        std::ostringstream oss;
-        oss << "HTTP/1.1 400 Bad Request\r\n"
-            << "Sec-WebSocket-Version: 13\r\n\r\n";
-        safeSend(fd, oss.str());
-        return;
-      } else {
-        auto temp = makeFrame(Frame<Input>{ FrameType::CLOSING_FRAME });
-        safeSend(fd, temp);
-        state = State::STATE_CLOSING;
-        type  = FrameType::INCOMPLETE_FRAME;
-        buffer.reset();
-      }
-    }
-
-    if (state == State::STATE_OPENING) {
-      assert(type == FrameType::OPENING_FRAME);
-      if (hs.resource != path) {
-        safeSend(fd, "HTTP/1.1 404 Not Found\r\n\r\n");
-        return;
-      }
-
-      auto answer = makeHandshakeAnswer(hs.key);
-      hs.reset();
-      safeSend(fd, answer);
-      state = State::STATE_NORMAL;
+      auto temp = makeFrame(Frame<Input>{ FrameType::CLOSING_FRAME });
+      safeSend(fd, temp);
+      state = State::STATE_CLOSING;
       type  = FrameType::INCOMPLETE_FRAME;
-      buffer.drop(buffer.view().find("\r\n\r\n") + 4);
-      if (buffer.length()) goto midpoint;
-    } else {
-      switch (type) {
-      case FrameType::INCOMPLETE_FRAME: continue;
-      case FrameType::CLOSING_FRAME:
-        if (state != State::STATE_CLOSING) {
-          auto temp = makeFrame({ FrameType::CLOSING_FRAME });
-          safeSend(fd, temp);
-        }
-        return;
-      case FrameType::PING_FRAME: safeSend(fd, makeFrame({ FrameType::PONG_FRAME })); break;
-      case FrameType::TEXT_FRAME: process(oframe.payload); break;
-      default: break;
-      }
-      type = FrameType::INCOMPLETE_FRAME;
-      buffer.drop(oframe.eaten);
-      if (buffer.length()) goto midpoint;
+      buffer.reset();
     }
   }
+
+  if (state == State::STATE_OPENING) {
+    assert(type == FrameType::OPENING_FRAME);
+    if (hs.resource != path) {
+      safeSend(fd, "HTTP/1.1 404 Not Found\r\n\r\n");
+      return result::STOPPED;
+    }
+
+    auto answer = makeHandshakeAnswer(hs.key);
+    hs.reset();
+    safeSend(fd, answer);
+    state = State::STATE_NORMAL;
+    type  = FrameType::INCOMPLETE_FRAME;
+    buffer.drop(buffer.view().find("\r\n\r\n") + 4);
+    return result::ACCEPT;
+  } else {
+    switch (type) {
+    case FrameType::INCOMPLETE_FRAME: return result::EMPTY;
+    case FrameType::CLOSING_FRAME:
+      if (state != State::STATE_CLOSING) {
+        auto temp = makeFrame({ FrameType::CLOSING_FRAME });
+        safeSend(fd, temp);
+      }
+      return result::STOPPED;
+    case FrameType::PING_FRAME: safeSend(fd, makeFrame({ FrameType::PONG_FRAME })); break;
+    case FrameType::TEXT_FRAME: process(shared_from_this(), oframe.payload); break;
+    default: break;
+    }
+    type = FrameType::INCOMPLETE_FRAME;
+    buffer.drop(oframe.eaten);
+    if (buffer.length()) goto midpoint;
+  }
+  return result::EMPTY;
 }
 
 void wsio::client::send(std::string_view data) { safeSend(fd, makeFrame({ FrameType::TEXT_FRAME, data })); }
