@@ -185,12 +185,12 @@ void RPC::Client::notify(std::string_view name, json data) {
 
 promise<bool> RPC::Client::on(std::string_view name, RPC::Client::data_fn list) {
   event_map.emplace(name, list);
-  return call("rpc.on", json::array({ name })).then<bool>([](json ret) { return ret.is_array() && ret.size() == 1 && ret[0] == "ok"; });
+  return call("rpc.on", json::array({ name })).then<bool>([name = std::string(name)](json ret) { return ret.is_object() && ret[name] == "ok"; });
 }
 
 promise<bool> RPC::Client::off(std::string const &name) {
   event_map.erase(name);
-  return call("rpc.off", json::array({ name })).then<bool>([](json ret) { return ret.is_array() && ret.size() == 1 && ret[0] == "ok"; });
+  return call("rpc.off", json::array({ name })).then<bool>([name = name](json ret) { return ret.is_object() && ret[name] == "ok"; });
 }
 
 void RPC::Client::incoming(std::string_view data) {
