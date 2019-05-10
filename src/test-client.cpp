@@ -14,12 +14,10 @@ int main() {
           std::cout << "ready!" << std::endl;
           return client.call("test", json::array({ "test" }));
         })
-        .force()
         .then<promise<json>>([](json data) {
           std::cout << "recv: " << data.dump(2) << std::endl;
           return client.call("test", json::array({ "test2" }));
         })
-        .force()
         .then([&](json data) {
           std::cout << "recv: " << data.dump(2) << std::endl;
           client.stop();

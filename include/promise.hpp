@@ -51,12 +51,6 @@ public:
       , _fail(rhs._fail) {
     rhs.body = nullptr;
   }
-  promise &operator=(promise &&rhs) {
-    body     = rhs.body;
-    rhs.body = nullptr;
-    _then    = rhs._then;
-    _fail    = rhs._fail;
-  }
   promise(std::function<void(then_fn, fail_fn)> f)
       : body(f) {}
   promise(std::function<void(resolver)> f)
@@ -78,21 +72,23 @@ public:
     this->_then = _then;
     return *this;
   }
-  template <typename R> promise<R> then(transform_fn<R> fn) {
+  template <typename R> auto then(transform_fn<R> fn) {
     auto next = body;
     body      = nullptr;
-    if constexpr (std::is_void_v<T>)
-      return { [=](auto th, auto fa) { next([=]() { th(fn()); }, fa); } };
-    else
-      return { [=](auto th, auto fa) { next([=](T const &t) { th(fn(t)); }, fa); } };
+    if constexpr (std::is_void_v<T>) {
+      if constexpr (is_promise_v<R>)
+        return R{ [=](auto th, auto fa) { next([=] { fn().then(th).fail(fa); }, fa); } };
+      else
+        return promise<R>{ [=](auto th, auto fa) { next([=]() { th(fn()); }, fa); } };
+    } else {
+      if constexpr (is_promise_v<R>)
+        return R{ [=](auto th, auto fa) { next([=](T const &t) { fn(t).then(th).fail(fa); }, fa); } };
+      else
+        return promise<R>{ [=](auto th, auto fa) { next([=](T const &t) { th(fn(t)); }, fa); } };
+    }
   }
   promise<T> &fail(fail_fn) {
     this->_fail = _fail;
     return *this;
-  }
-  T force() {
-    auto next = body;
-    body      = nullptr;
-    return { [=](auto th, auto fa) { next([=](T const &t) { const_cast<T &>(t).then(th).fail(fa); }, fa); } };
   }
 };
