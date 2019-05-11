@@ -16,13 +16,19 @@ int main() {
         })
         .then<promise<json>>([](json data) {
           std::cout << "recv: " << data.dump(2) << std::endl;
-          return client.call("test", json::array({ "test2" }));
+          return client.call("error", json::array({ "boom" }));
         })
         .then([&](json data) {
-          std::cout << "recv: " << data.dump(2) << std::endl;
+          std::cout << "recv(failed): " << data.dump(2) << std::endl;
           client.stop();
         })
-        .fail([](auto ex) { std::cerr << typeid(ex).name() << ex.what() << std::endl; });
+        .fail([](auto ex) {
+          try {
+            if (ex) std::rethrow_exception(ex);
+          } catch (RemoteException const &ex) { std::cout << ex.full << std::endl; } catch (std::exception const &ex) {
+            std::cout << ex.what() << std::endl;
+          }
+        });
 
   } catch (std::runtime_error &e) { std::cerr << typeid(e).name() << e.what() << std::endl; }
 }

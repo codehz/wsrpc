@@ -21,11 +21,11 @@ struct InvalidParams : std::runtime_error {
 
 struct RemoteException : std::runtime_error {
   int code;
-  json data;
+  json full;
   inline RemoteException(json ex)
       : runtime_error(ex["message"].get<std::string>())
       , code(ex["code"].get<int>())
-      , data(ex["data"]) {}
+      , full(ex) {}
 };
 
 struct server_io {

@@ -22,7 +22,7 @@ template <typename T> constexpr auto is_promise_v = is_promise<T>::value;
 template <typename T> class promise {
   using then_fn                            = void_fn_t<T>;
   template <typename R> using transform_fn = void_fn_t<T, R>;
-  using fail_fn                            = std::function<void(std::exception const &ex)>;
+  using fail_fn                            = std::function<void(std::exception_ptr ex)>;
 
   then_fn _then;
   fail_fn _fail;
@@ -39,7 +39,8 @@ public:
   public:
     std::enable_if_t<!std::is_void_v<T>> resolve(T const &value) { _then(value); }
     std::enable_if_t<std::is_void_v<T>> resolve() { _then(); }
-    void reject(std::exception const &ex) { _fail(ex); }
+    void reject(std::exception_ptr ex) { _fail(ex); }
+    template <typename E> void reject(E ex) { _fail(std::make_exception_ptr(ex)); }
 
     friend class promise;
   };
@@ -100,7 +101,7 @@ public:
         return promise<R>{ [=](auto th, auto fa) { next([=](T const &t) { th(fn(t)); }, fa); } };
     }
   }
-  promise<T> &fail(fail_fn) {
+  promise<T> &fail(fail_fn _fail) {
     this->_fail = _fail;
     return *this;
   }
