@@ -161,14 +161,9 @@ server_wsio::server_wsio(std::string_view address) {
     }
   } else
     throw InvalidAddress();
-  ev = eventfd(0, EFD_CLOEXEC);
-  if (ev == -1) throw InvalidSocketOp("eventfd");
 }
 
-server_wsio::~server_wsio() {
-  close(fd);
-  close(ev);
-}
+server_wsio::~server_wsio() { close(fd); }
 
 struct AutoClose {
   int fd;
@@ -176,61 +171,42 @@ struct AutoClose {
 };
 
 void server_wsio::accept(accept_fn process, recv_fn rcv) {
-  int ep = epoll_create1(EPOLL_CLOEXEC);
-  if (ep == -1) throw InvalidSocketOp("epoll_create");
-  AutoClose epc{ ep };
-  {
-    epoll_event event = { .events = EPOLLERR | EPOLLIN, .data = { .fd = ev } };
-    epoll_ctl(ep, EPOLL_CTL_ADD, ev, &event);
-  }
-  {
-    epoll_event event = { .events = EPOLLERR | EPOLLIN, .data = { .fd = fd } };
-    epoll_ctl(ep, EPOLL_CTL_ADD, fd, &event);
-  }
-  while (true) {
-    epoll_event event = {};
-
-    auto ret = epoll_wait(ep, &event, 1, -1);
-    if (ret > 0) {
-      if (event.data.fd == ev) {
-        uint64_t count;
-        read(ev, &count, sizeof(count));
-        break;
-      } else if (event.data.fd == fd) {
-        if (event.events & EPOLLERR) break;
-        sockaddr_storage ad = {};
-        socklen_t len       = sizeof(ad);
-        auto remote         = ::accept4(fd, (sockaddr *)&ad, &len, SOCK_CLOEXEC);
-        if (remote == -1) throw InvalidSocketOp("accept");
-        fdmap[remote] = std::make_shared<server_wsio::client>(remote, path);
-        {
-          epoll_event event = { .events = EPOLLERR | EPOLLIN, .data = { .fd = remote } };
-          epoll_ctl(ep, EPOLL_CTL_ADD, remote, &event);
-        }
-      } else if (auto it = fdmap.find(event.data.fd); it != fdmap.end()) {
-        auto &[remote, client] = *it;
-        try {
-          if (event.events & EPOLLERR) {
-            throw InvalidSocketOp("epoll");
-          } else {
-            switch (client->handle(rcv)) {
-            case client::result::ACCEPT: process(client); break;
-            case client::result::STOPPED: throw CommonException();
-            case client::result::EMPTY: break;
-            }
+  auto client_id = ep.reg([&](epoll_event const &e) {
+    if (auto it = fdmap.find(e.data.fd); it != fdmap.end()) {
+      auto &[remote, client] = *it;
+      try {
+        if (e.events & EPOLLERR) {
+          throw InvalidSocketOp("epoll");
+        } else {
+          switch (client->handle(rcv)) {
+          case client::result::ACCEPT: process(client); break;
+          case client::result::STOPPED: throw CommonException();
+          case client::result::EMPTY: break;
           }
-        } catch (std::runtime_error &e) {
-          epoll_ctl(remote, EPOLL_CTL_DEL, remote, nullptr);
-          fdmap.erase(it);
         }
+      } catch (std::runtime_error &e) {
+        ep.del(remote);
+        fdmap.erase(it);
       }
     }
-  }
+  });
+  ep.add(EPOLLIN, fd, ep.reg([this, client_id](epoll_event const &e) {
+    if (e.events & EPOLLERR) {
+      ep.shutdown();
+      return;
+    }
+    sockaddr_storage ad = {};
+    socklen_t len       = sizeof(ad);
+    auto remote         = ::accept4(fd, (sockaddr *)&ad, &len, SOCK_CLOEXEC);
+    if (remote == -1) throw InvalidSocketOp("accept");
+    fdmap[remote] = std::make_shared<server_wsio::client>(remote, path);
+    ep.add(EPOLLIN, remote, client_id);
+  }));
+  ep.wait();
 }
 
 void server_wsio::shutdown() {
-  uint64_t one = 1;
-  write(ev, &one, 8);
+  ep.shutdown();
   ::shutdown(fd, SHUT_WR);
 }
 
@@ -394,8 +370,6 @@ client_wsio::client_wsio(std::string_view address) {
     }
   } else
     throw InvalidAddress();
-  ev = eventfd(0, EFD_CLOEXEC);
-  if (ev == -1) throw InvalidSocketOp("eventfd");
 
   union {
     uint64_t u2[2] = { std::experimental::randint((uint64_t)0, UINT64_MAX), std::experimental::randint((uint64_t)0, UINT64_MAX) };
@@ -417,68 +391,49 @@ client_wsio::client_wsio(std::string_view address) {
 }
 
 void client_wsio::shutdown() {
-  uint64_t one = 1;
-  write(ev, &one, 8);
+  ep.shutdown();
   ::shutdown(fd, SHUT_RDWR);
 }
 
 void client_wsio::recv(recv_fn rcv, promise<void>::resolver resolver) {
-  int ep = epoll_create1(EPOLL_CLOEXEC);
-  if (ep == -1) return resolver.reject(InvalidSocketOp("epoll_create"));
-  AutoClose epc{ ep };
-  {
-    epoll_event event = { .events = EPOLLERR | EPOLLIN, .data = { .fd = ev } };
-    epoll_ctl(ep, EPOLL_CTL_ADD, ev, &event);
-  }
-  {
-    epoll_event event = { .events = EPOLLERR | EPOLLIN, .data = { .fd = fd } };
-    epoll_ctl(ep, EPOLL_CTL_ADD, fd, &event);
-  }
-  while (true) {
-    epoll_event event = {};
+  ep.add(EPOLLIN, fd, ep.reg([&](epoll_event const &e) {
+    if (e.events & EPOLLERR) return resolver.reject(InvalidSocketOp("epoll_wait"));
 
-    auto ret = epoll_wait(ep, &event, 1, -1);
-    if (ret > 0) {
-      if (event.data.fd == ev) {
-        uint64_t count;
-        read(ev, &count, sizeof(count));
-        break;
-      }
-      if (event.events & EPOLLERR) return resolver.reject(InvalidSocketOp("epoll_wait"));
-      ssize_t readed = ::recv(fd, buffer.allocate(0xFFFF), 0xFFFF, 0);
-      if (readed == 0) break;
-      if (readed == -1) return resolver.reject(RecvFailed());
-      buffer.eat(readed);
-
-      Frame<Input> oframe;
-      FrameType type = FrameType::INCOMPLETE_FRAME;
-
-      if (state == State::STATE_OPENING) {
-        if (parseHandshakeAnswer(buffer, key).empty()) return resolver.reject(HandshakeFailed{});
-        resolver.resolve();
-        state = State::STATE_NORMAL;
-        buffer.reset();
-        continue;
-      } else {
-      midpoint:
-        oframe = parseServerFrame(buffer);
-        type   = oframe.type;
-      }
-
-      switch (type) {
-      case FrameType::ERROR_FRAME: return resolver.reject(InvalidFrame{});
-      case FrameType::CLOSING_FRAME: goto out;
-      case FrameType::PING_FRAME: safeSend(fd, makeFrame({ FrameType::PONG_FRAME }, true)); break;
-      case FrameType::TEXT_FRAME: rcv(oframe.payload); break;
-      default: break;
-      }
-      buffer.drop(oframe.eaten);
-      if (buffer.length()) goto midpoint;
+    ssize_t readed = ::recv(fd, buffer.allocate(0xFFFF), 0xFFFF, 0);
+    if (readed == 0) {
+      ep.shutdown();
+      return;
     }
-  }
-out:
-  return;
-}
+    if (readed == -1) return resolver.reject(RecvFailed());
+    buffer.eat(readed);
+
+    Frame<Input> oframe;
+    FrameType type = FrameType::INCOMPLETE_FRAME;
+
+    if (state == State::STATE_OPENING) {
+      if (parseHandshakeAnswer(buffer, key).empty()) return resolver.reject(HandshakeFailed{});
+      resolver.resolve();
+      state = State::STATE_NORMAL;
+      buffer.reset();
+      return;
+    } else {
+    midpoint:
+      oframe = parseServerFrame(buffer);
+      type   = oframe.type;
+    }
+
+    switch (type) {
+    case FrameType::ERROR_FRAME: return resolver.reject(InvalidFrame{});
+    case FrameType::CLOSING_FRAME: ep.shutdown(); return;
+    case FrameType::PING_FRAME: safeSend(fd, makeFrame({ FrameType::PONG_FRAME }, true)); break;
+    case FrameType::TEXT_FRAME: rcv(oframe.payload); break;
+    default: break;
+    }
+    buffer.drop(oframe.eaten);
+    if (buffer.length()) goto midpoint;
+  }));
+  ep.wait();
+} // namespace rpcws
 
 void client_wsio::send(std::string_view data) {
   auto frame = makeFrame({ FrameType::TEXT_FRAME, data }, true);

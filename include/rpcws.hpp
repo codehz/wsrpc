@@ -1,5 +1,6 @@
 #pragma once
 
+#include "epoll.hpp"
 #include "rpc.hpp"
 #include "ws.hpp"
 #include <exception>
@@ -81,8 +82,11 @@ struct server_wsio : server_io {
   void accept(accept_fn, recv_fn rcv) override;
   void shutdown() override;
 
+  inline epoll &handler() { return ep; }
+
 private:
-  int fd, ev, ep;
+  int fd;
+  epoll ep;
   std::map<int, std::shared_ptr<client>> fdmap;
   std::string path;
 };
@@ -93,8 +97,11 @@ struct client_wsio : client_io {
   void recv(recv_fn, promise<void>::resolver) override;
   void send(std::string_view) override;
 
+  inline epoll &handler() { return ep; }
+
 private:
-  int fd, ev;
+  int fd;
+  epoll ep;
   std::string path, key;
   Buffer buffer;
   State state;
