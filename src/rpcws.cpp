@@ -132,7 +132,7 @@ server_wsio::server_wsio(std::string_view address) {
       addrinfo *list;
       auto ret = getaddrinfo(host_str.c_str(), port_str.c_str(), &hints, &list);
       if (ret != 0) throw InvalidAddress();
-      fd               = socket(list->ai_family, list->ai_socktype, list->ai_protocol);
+      fd               = socket(list->ai_family, list->ai_socktype | SOCK_CLOEXEC, list->ai_protocol);
       std::string addr = { (char *)list->ai_addr, list->ai_addrlen };
       freeaddrinfo(list);
       if (fd == -1) throw InvalidSocketOp("socket");
@@ -151,7 +151,7 @@ server_wsio::server_wsio(std::string_view address) {
     {
       sockaddr_un addr = { .sun_family = AF_UNIX };
       memcpy(addr.sun_path, &host[0], host.length());
-      fd = socket(AF_UNIX, SOCK_STREAM, 0);
+      fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
       if (fd == -1) throw InvalidSocketOp("socket");
       unlink(host.c_str());
       auto ret = bind(fd, (sockaddr *)&addr, sizeof(sockaddr_un));
@@ -161,7 +161,7 @@ server_wsio::server_wsio(std::string_view address) {
     }
   } else
     throw InvalidAddress();
-  ev = eventfd(0, 0);
+  ev = eventfd(0, EFD_CLOEXEC);
   if (ev == -1) throw InvalidSocketOp("eventfd");
 }
 
@@ -176,7 +176,7 @@ struct AutoClose {
 };
 
 void server_wsio::accept(accept_fn process, recv_fn rcv) {
-  int ep = epoll_create(1);
+  int ep = epoll_create1(EPOLL_CLOEXEC);
   if (ep == -1) throw InvalidSocketOp("epoll_create");
   AutoClose epc{ ep };
   {
@@ -200,7 +200,7 @@ void server_wsio::accept(accept_fn process, recv_fn rcv) {
         if (event.events & EPOLLERR) break;
         sockaddr_storage ad = {};
         socklen_t len       = sizeof(ad);
-        auto remote         = ::accept(fd, (sockaddr *)&ad, &len);
+        auto remote         = ::accept4(fd, (sockaddr *)&ad, &len, SOCK_CLOEXEC);
         if (remote == -1) throw InvalidSocketOp("accept");
         fdmap[remote] = std::make_shared<server_wsio::client>(remote, path);
         {
@@ -373,7 +373,7 @@ client_wsio::client_wsio(std::string_view address) {
       addrinfo *list;
       auto ret = getaddrinfo(host_str.c_str(), port_str.c_str(), &hints, &list);
       if (ret != 0) throw InvalidAddress();
-      fd               = socket(list->ai_family, list->ai_socktype, list->ai_protocol);
+      fd               = socket(list->ai_family, list->ai_socktype | SOCK_CLOEXEC, list->ai_protocol);
       std::string addr = { (char *)list->ai_addr, list->ai_addrlen };
       freeaddrinfo(list);
       if (fd == -1) throw InvalidSocketOp("socket");
@@ -387,14 +387,14 @@ client_wsio::client_wsio(std::string_view address) {
     {
       sockaddr_un addr = { .sun_family = AF_UNIX };
       memcpy(addr.sun_path, &hoststr[0], hoststr.length());
-      fd = socket(AF_UNIX, SOCK_STREAM, 0);
+      fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
       if (fd == -1) throw InvalidSocketOp("socket");
       auto ret = connect(fd, (sockaddr *)&addr, sizeof(sockaddr_un));
       if (ret == -1) throw InvalidSocketOp("connect");
     }
   } else
     throw InvalidAddress();
-  ev = eventfd(0, 0);
+  ev = eventfd(0, EFD_CLOEXEC);
   if (ev == -1) throw InvalidSocketOp("eventfd");
 
   union {
@@ -423,7 +423,7 @@ void client_wsio::shutdown() {
 }
 
 void client_wsio::recv(recv_fn rcv, promise<void>::resolver resolver) {
-  int ep = epoll_create(1);
+  int ep = epoll_create1(EPOLL_CLOEXEC);
   if (ep == -1) return resolver.reject(InvalidSocketOp("epoll_create"));
   AutoClose epc{ ep };
   {
