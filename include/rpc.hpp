@@ -79,6 +79,8 @@ public:
   void start();
   void stop();
 
+  inline server_io &layer() { return *io; }
+
   class Client {
   public:
     using data_fn = std::function<void(json)>;
@@ -104,6 +106,8 @@ public:
 
     promise<void> start();
     void stop();
+
+    inline client_io &layer() { return *io; }
 
   private:
     void incoming(std::string_view);
