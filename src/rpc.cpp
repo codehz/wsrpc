@@ -126,30 +126,35 @@ void RPC::incoming(std::shared_ptr<server_io::client> client, std::string_view d
         auto ret = json::object({ { "jsonrpc", "2.0" }, { "result", result }, { "id", id } });
         client->send(ret.dump());
       }
-    } catch (NotFound &e) {
+    } catch (NotFound const &e) {
       std::lock_guard guard{ mtx };
       auto err = json::object({ { "code", -32601 }, { "message", e.what() } });
       auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
       if (has_id) ret["id"] = id;
       client->send(ret.dump());
-    } catch (InvalidParams &e) {
+    } catch (InvalidParams const &e) {
       std::lock_guard guard{ mtx };
       auto err = json::object({ { "code", -32602 }, { "message", e.what() } });
       auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
       if (has_id) ret["id"] = id;
       client->send(ret.dump());
-    } catch (std::exception &e) {
+    } catch (json::parse_error const &e) {
+      auto err = json::object({ { "code", -32000 }, { "message", e.what() }, { "data", json::object({ { "position", e.byte } }) } });
+      auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
+      if (has_id) ret["id"] = id;
+      client->send(ret.dump());
+    } catch (std::exception const &e) {
       auto err = json::object({ { "code", -32000 }, { "message", e.what() } });
       auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
       if (has_id) ret["id"] = id;
       client->send(ret.dump());
     }
-  } catch (json::parse_error &e) {
+  } catch (json::parse_error const &e) {
     std::lock_guard guard{ mtx };
     auto err = json::object({ { "code", -32700 }, { "message", e.what() } });
     auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
     client->send(ret.dump());
-  } catch (Invalid &e) {
+  } catch (Invalid const &e) {
     std::lock_guard guard{ mtx };
     auto err = json::object({ { "code", -32600 }, { "message", e.what() } });
     auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
