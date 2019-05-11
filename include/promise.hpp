@@ -69,7 +69,20 @@ public:
     }
   }
   promise<T> &then(then_fn _then) {
-    this->_then = _then;
+    if constexpr (std::is_void_v<T>)
+      this->_then = this->_then ?
+                        [last = this->_then, _then] {
+                          last();
+                          _then();
+                        } :
+                        _then;
+    else
+      this->_then = this->_then ?
+                        [last = this->_then, _then](auto v) {
+                          last(v);
+                          _then(v);
+                        } :
+                        _then;
     return *this;
   }
   template <typename R> auto then(transform_fn<R> fn) {
