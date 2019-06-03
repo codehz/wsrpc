@@ -79,7 +79,7 @@ public:
   void start();
   void stop();
 
-  inline server_io &layer() { return *io; }
+  template <typename T = server_io> inline T &layer() { return dynamic_cast<T &>(*io); }
 
   class Client {
   public:
@@ -107,7 +107,7 @@ public:
     promise<void> start();
     void stop();
 
-    inline client_io &layer() { return *io; }
+    template <typename T = client_io> inline T &layer() { return dynamic_cast<T &>(*io); }
 
   private:
     void incoming(std::string_view);
