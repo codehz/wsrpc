@@ -37,10 +37,10 @@ public:
         , _fail(_fail) {}
 
   public:
-    std::enable_if_t<!std::is_void_v<T>> resolve(T const &value) { _then(value); }
-    std::enable_if_t<std::is_void_v<T>> resolve() { _then(); }
-    void reject(std::exception_ptr ex) { _fail(ex); }
-    template <typename E> void reject(E ex) { _fail(std::make_exception_ptr(ex)); }
+    std::enable_if_t<!std::is_void_v<T>> resolve(T const &value) const { _then(value); }
+    std::enable_if_t<std::is_void_v<T>> resolve() const { _then(); }
+    void reject(std::exception_ptr ex) const { _fail(ex); }
+    template <typename E> void reject(E ex) const { _fail(std::make_exception_ptr(ex)); }
 
     friend class promise;
   };

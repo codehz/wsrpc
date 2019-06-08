@@ -8,7 +8,8 @@ int main() {
   using namespace std::chrono_literals;
 
   try {
-    static RPC::Client client(std::make_unique<client_wsio>("ws://127.0.0.1:16400/"));
+    auto ep = std::make_shared<epoll>();
+    static RPC::Client client(std::make_unique<client_wsio>("ws://127.0.0.1:16400/", ep));
     client.start()
         .then<promise<json>>([] {
           std::cout << "ready!" << std::endl;
@@ -21,14 +22,16 @@ int main() {
         .then([&](json data) {
           std::cout << "recv(failed): " << data.dump(2) << std::endl;
           client.stop();
+          ep->shutdown();
         })
-        .fail([](auto ex) {
+        .fail([&](auto ex) {
           try {
             if (ex) std::rethrow_exception(ex);
           } catch (RemoteException const &ex) { std::cout << ex.full << std::endl; } catch (std::exception const &ex) {
             std::cout << ex.what() << std::endl;
           }
+          ep->shutdown();
         });
-
+    ep->wait();
   } catch (std::runtime_error &e) { std::cerr << typeid(e).name() << e.what() << std::endl; }
 }

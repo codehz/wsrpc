@@ -67,7 +67,7 @@ struct server_wsio : server_io {
     ~client() override;
     void shutdown() override;
     void send(std::string_view) override;
-    result handle(recv_fn &);
+    result handle(recv_fn const &);
 
   private:
     int fd;
@@ -77,31 +77,31 @@ struct server_wsio : server_io {
     Buffer buffer;
   };
 
-  server_wsio(std::string_view address);
+  server_wsio(std::string_view address, std::shared_ptr<epoll> ep = std::make_shared<epoll>());
   ~server_wsio() override;
   void accept(accept_fn, recv_fn rcv) override;
   void shutdown() override;
 
-  inline epoll &handler() { return ep; }
+  inline epoll &handler() { return *ep; }
 
 private:
   int fd;
-  epoll ep;
+  std::shared_ptr<epoll> ep;
   std::map<int, std::shared_ptr<client>> fdmap;
   std::string path;
 };
 
 struct client_wsio : client_io {
-  client_wsio(std::string_view address);
+  client_wsio(std::string_view address, std::shared_ptr<epoll> ep = std::make_shared<epoll>());
   void shutdown() override;
   void recv(recv_fn, promise<void>::resolver) override;
   void send(std::string_view) override;
 
-  inline epoll &handler() { return ep; }
+  inline epoll &handler() { return *ep; }
 
 private:
   int fd;
-  epoll ep;
+  std::shared_ptr<epoll> ep;
   std::string path, key;
   Buffer buffer;
   State state;
