@@ -63,7 +63,7 @@ Buffer::operator std::string_view() const { return view(); }
 Buffer::~Buffer() { delete[] start; }
 
 InvalidAddress::InvalidAddress()
-    : std::runtime_error("") {}
+    : std::runtime_error("invalid address") {}
 
 InvalidSocketOp::InvalidSocketOp(char const *msg)
     : std::runtime_error(std::string(msg) + ": " + strerror(errno)) {}
@@ -164,7 +164,10 @@ server_wsio::server_wsio(std::string_view address, std::shared_ptr<epoll> ep)
     throw InvalidAddress();
 }
 
-server_wsio::~server_wsio() { close(fd); }
+server_wsio::~server_wsio() {
+  shutdown();
+  close(fd);
+}
 
 struct AutoClose {
   int fd;
@@ -193,7 +196,7 @@ void server_wsio::accept(accept_fn process, recv_fn rcv) {
   });
   ep->add(EPOLLIN, fd, ep->reg([=](epoll_event const &e) {
     if (e.events & EPOLLERR) {
-      ep->shutdown();
+      ep->del(fd);
       return;
     }
     sockaddr_storage ad = {};
@@ -207,7 +210,11 @@ void server_wsio::accept(accept_fn process, recv_fn rcv) {
 
 void server_wsio::shutdown() {
   ep->del(fd);
-  ::shutdown(fd, SHUT_WR);
+  for (auto &[fd, _] : fdmap) {
+    ep->del(fd);
+    ::shutdown(fd, SHUT_RDWR);
+    close(fd);
+  }
 }
 
 server_wsio::client::client(int fd, std::string_view path)
@@ -216,7 +223,7 @@ server_wsio::client::client(int fd, std::string_view path)
     , type(FrameType::INCOMPLETE_FRAME)
     , state(State::STATE_OPENING) {}
 
-server_wsio::client::~client() { close(fd); }
+server_wsio::client::~client() { shutdown(); }
 
 void server_wsio::client::shutdown() {
   ::shutdown(fd, SHUT_WR);
@@ -391,9 +398,11 @@ client_wsio::client_wsio(std::string_view address, std::shared_ptr<epoll> ep)
   }
 }
 
-void client_wsio::shutdown() {
-  ep->del(fd);
-  ::shutdown(fd, SHUT_RDWR);
+void client_wsio::shutdown() { ep->del(fd); }
+
+client_wsio::~client_wsio() {
+  shutdown();
+  close(fd);
 }
 
 void client_wsio::recv(recv_fn rcv, promise<void>::resolver resolver) {

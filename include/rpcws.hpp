@@ -93,6 +93,7 @@ private:
 
 struct client_wsio : client_io {
   client_wsio(std::string_view address, std::shared_ptr<epoll> ep = std::make_shared<epoll>());
+  ~client_wsio();
   void shutdown() override;
   void recv(recv_fn, promise<void>::resolver) override;
   void send(std::string_view) override;
