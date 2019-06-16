@@ -37,8 +37,13 @@ public:
         , _fail(_fail) {}
 
   public:
-    std::enable_if_t<!std::is_void_v<T>> resolve(T const &value) const { _then(value); }
-    std::enable_if_t<std::is_void_v<T>> resolve() const { _then(); }
+    template <typename X, typename = std::enable_if_t<std::is_same_v<T, X> && !std::is_void_v<T>>> void resolve(X const &value) const {
+      _then(value);
+    }
+    void resolve() const {
+      static_assert(std::is_void_v<T>, "Non-void value required");
+      _then();
+    }
     void reject(std::exception_ptr ex) const { _fail(ex); }
     template <typename E> void reject(E ex) const { _fail(std::make_exception_ptr(ex)); }
 
