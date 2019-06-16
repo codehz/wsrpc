@@ -66,6 +66,8 @@ public:
     }
   }
 
+  inline bool has(int fd) { return type_map.find(fd) != type_map.end(); }
+
   inline void shutdown() {
     uint64_t count = 1;
     write(ev, &count, 8);

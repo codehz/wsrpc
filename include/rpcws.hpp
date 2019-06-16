@@ -97,11 +97,14 @@ struct client_wsio : client_io {
   void shutdown() override;
   void recv(recv_fn, promise<void>::resolver) override;
   void send(std::string_view) override;
+  bool alive() override;
+  void ondie(std::function<void()>) override;
 
   inline epoll &handler() { return *ep; }
 
 private:
   int fd;
+  std::vector<std::function<void()>> ondie_cbs;
   std::shared_ptr<epoll> ep;
   std::string path, key;
   Buffer buffer;

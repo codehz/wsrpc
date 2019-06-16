@@ -77,14 +77,26 @@ void RPC::emit(std::string const &name, json data) {
   }
 }
 
-void RPC::reg(std::string_view name, std::function<json(std::shared_ptr<server_io::client>, json)> cb) {
+void RPC::reg(std::string_view name, maybe_async_handler cb) {
   std::lock_guard guard{ mtx };
   methods.emplace(name, cb);
+}
+
+size_t RPC::reg(std::regex rgx, maybe_async_proxy_handler cb) {
+  std::lock_guard guard{ mtx };
+  proxied_methods.emplace_back(rgx, cb, unqid++);
+  return unqid - 1;
 }
 
 void RPC::unreg(std::string const &name) {
   std::lock_guard guard{ mtx };
   methods.erase(name);
+}
+
+void RPC::unreg(size_t uid) {
+  std::lock_guard guard{ mtx };
+  proxied_methods.erase(std::remove_if(proxied_methods.begin(), proxied_methods.end(), [&](auto x) { return std::get<2>(x) == uid; }),
+                        proxied_methods.end());
 }
 
 void RPC::start() {
@@ -98,10 +110,35 @@ struct Invalid : std::runtime_error {
       : runtime_error(msg) {}
 };
 
-struct NotFound : std::runtime_error {
-  NotFound()
-      : runtime_error("method not found") {}
-};
+static inline void handle_exception(std::exception_ptr ep, std::recursive_mutex &mtx, std::shared_ptr<server_io::client> client, bool has_id,
+                                    json id) {
+  try {
+    if (ep) std::rethrow_exception(ep);
+  } catch (InvalidParams const &e) {
+    std::lock_guard guard{ mtx };
+    auto err = json::object({ { "code", -32602 }, { "message", e.what() } });
+    auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
+    if (has_id) ret["id"] = id;
+    client->send(ret.dump());
+  } catch (RemoteException const &e) {
+    auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", e.full }, { "id", nullptr } });
+    if (has_id) ret["id"] = id;
+    client->send(ret.dump());
+  } catch (json::parse_error const &e) {
+    auto err = json::object({ { "code", -32000 }, { "message", e.what() }, { "data", json::object({ { "position", e.byte } }) } });
+    auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
+    if (has_id) ret["id"] = id;
+    client->send(ret.dump());
+  } catch (std::exception const &e) {
+    auto err = json::object({ { "code", -32000 }, { "message", e.what() } });
+    auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
+    if (has_id) ret["id"] = id;
+    client->send(ret.dump());
+  }
+}
+
+template <class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
+template <class... Ts> overloaded(Ts...)->overloaded<Ts...>;
 
 void RPC::incoming(std::shared_ptr<server_io::client> client, std::string_view data) {
   try {
@@ -118,36 +155,66 @@ void RPC::incoming(std::shared_ptr<server_io::client> client, std::string_view d
     auto method = method_.get<std::string>();
 
     std::lock_guard guard{ mtx };
-    auto it = methods.find(method);
-    try {
-      if (it == methods.end()) throw NotFound();
-      auto result = it->second(client, params);
-      if (has_id) {
-        auto ret = json::object({ { "jsonrpc", "2.0" }, { "result", result }, { "id", id } });
+    if (auto it = methods.find(method); it == methods.end()) {
+      bool matched = false;
+      for (auto &[k, v, _] : proxied_methods) {
+        if (std::smatch res; std::regex_match(method, res, k)) {
+          std::visit(overloaded{
+                         [&](std::function<json(std::shared_ptr<server_io::client>, std::smatch, json)> sync) {
+                           try {
+                             auto result = sync(client, res, params);
+                             if (has_id) {
+                               auto ret = json::object({ { "jsonrpc", "2.0" }, { "result", result }, { "id", id } });
+                               client->send(ret.dump());
+                             }
+                           } catch (...) { handle_exception(std::current_exception(), mtx, client, has_id, id); }
+                         },
+                         [&](std::function<promise<json>(std::shared_ptr<server_io::client>, std::smatch, json)> async) {
+                           async(client, res, params)
+                               .then([=](json result) {
+                                 if (has_id) {
+                                   auto ret = json::object({ { "jsonrpc", "2.0" }, { "result", result }, { "id", id } });
+                                   client->send(ret.dump());
+                                 }
+                               })
+                               .fail([=](std::exception_ptr ptr) { handle_exception(ptr, mtx, client, has_id, id); });
+                         },
+                     },
+                     v);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        std::lock_guard guard{ mtx };
+        auto err = json::object({ { "code", -32601 }, { "message", "method not found" } });
+        auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
+        if (has_id) ret["id"] = id;
         client->send(ret.dump());
       }
-    } catch (NotFound const &e) {
-      std::lock_guard guard{ mtx };
-      auto err = json::object({ { "code", -32601 }, { "message", e.what() } });
-      auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
-      if (has_id) ret["id"] = id;
-      client->send(ret.dump());
-    } catch (InvalidParams const &e) {
-      std::lock_guard guard{ mtx };
-      auto err = json::object({ { "code", -32602 }, { "message", e.what() } });
-      auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
-      if (has_id) ret["id"] = id;
-      client->send(ret.dump());
-    } catch (json::parse_error const &e) {
-      auto err = json::object({ { "code", -32000 }, { "message", e.what() }, { "data", json::object({ { "position", e.byte } }) } });
-      auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
-      if (has_id) ret["id"] = id;
-      client->send(ret.dump());
-    } catch (std::exception const &e) {
-      auto err = json::object({ { "code", -32000 }, { "message", e.what() } });
-      auto ret = json::object({ { "jsonrpc", "2.0" }, { "error", err }, { "id", nullptr } });
-      if (has_id) ret["id"] = id;
-      client->send(ret.dump());
+    } else {
+      std::visit(overloaded{
+                     [&](std::function<json(std::shared_ptr<server_io::client>, json)> const &sync) {
+                       try {
+                         auto result = sync(client, params);
+                         if (has_id) {
+                           auto ret = json::object({ { "jsonrpc", "2.0" }, { "result", result }, { "id", id } });
+                           client->send(ret.dump());
+                         }
+                       } catch (...) { handle_exception(std::current_exception(), mtx, client, has_id, id); }
+                     },
+                     [&](std::function<promise<json>(std::shared_ptr<server_io::client>, json)> const &async) {
+                       async(client, params)
+                           .then([=](json result) {
+                             if (has_id) {
+                               auto ret = json::object({ { "jsonrpc", "2.0" }, { "result", result }, { "id", id } });
+                               client->send(ret.dump());
+                             }
+                           })
+                           .fail([=](std::exception_ptr ptr) { handle_exception(ptr, mtx, client, has_id, id); });
+                     },
+                 },
+                 it->second);
     }
   } catch (json::parse_error const &e) {
     std::lock_guard guard{ mtx };
@@ -172,7 +239,7 @@ RPC::Client::Client(std::unique_ptr<client_io> &&io)
 
 RPC::Client::~Client() { io->shutdown(); }
 
-promise<json> RPC::Client::call(std::string_view name, json data) {
+promise<json> RPC::Client::call(std::string const &name, json data) {
   return { [=](auto resolver) {
     auto req = json::object({ { "jsonrpc", "2.0" }, { "method", name }, { "params", data }, { "id", last_id } });
     {
@@ -228,8 +295,7 @@ void RPC::Client::incoming(std::string_view data) {
     }
   } catch (std::exception &e) {
     std::cerr << e.what() << std::endl;
-    std::lock_guard guard{ mtx };
-    io->shutdown();
+    stop();
   }
 }
 
@@ -237,6 +303,9 @@ promise<void> RPC::Client::start() {
   return { [this](auto resolver) { this->io->recv([=](auto data) { incoming(data); }, resolver); } };
 }
 
-void RPC::Client::stop() { this->io->shutdown(); }
+void RPC::Client::stop() {
+  std::lock_guard guard{ mtx };
+  this->io->shutdown();
+}
 
 } // namespace rpc

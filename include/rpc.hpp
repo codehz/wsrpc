@@ -6,9 +6,11 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <regex>
 #include <set>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace rpc {
@@ -49,6 +51,8 @@ struct client_io {
   virtual void shutdown()                             = 0;
   virtual void recv(recv_fn, promise<void>::resolver) = 0;
   virtual void send(std::string_view)                 = 0;
+  virtual bool alive()                                = 0;
+  virtual void ondie(std::function<void()>)           = 0;
 };
 
 template <class T> struct wptr_less_than {
@@ -58,11 +62,17 @@ template <class T> struct wptr_less_than {
 };
 
 class RPC {
+  using maybe_async_handler       = std::variant<std::function<json(std::shared_ptr<server_io::client>, json)>,
+                                           std::function<promise<json>(std::shared_ptr<server_io::client>, json)>>;
+  using maybe_async_proxy_handler = std::variant<std::function<json(std::shared_ptr<server_io::client>, std::smatch, json)>,
+                                                 std::function<promise<json>(std::shared_ptr<server_io::client>, std::smatch, json)>>;
   std::recursive_mutex mtx;
   std::unique_ptr<server_io> io;
-  std::map<std::string, std::function<json(std::shared_ptr<server_io::client>, json)>> methods;
+  std::map<std::string, maybe_async_handler> methods;
+  std::vector<std::tuple<std::regex, maybe_async_proxy_handler, size_t>> proxied_methods;
   std::vector<std::string> server_events;
   std::map<std::string, std::set<std::weak_ptr<server_io::client>, wptr_less_than<server_io::client>>> server_event_map;
+  size_t unqid;
 
 public:
   RPC(decltype(io) &&io);
@@ -73,8 +83,10 @@ public:
 
   void event(std::string_view);
   void emit(std::string const &, json data);
-  void reg(std::string_view, std::function<json(std::shared_ptr<server_io::client>, json)>);
+  void reg(std::string_view, maybe_async_handler);
+  size_t reg(std::regex, maybe_async_proxy_handler);
   void unreg(std::string const &);
+  void unreg(size_t);
 
   void start();
   void stop();
@@ -99,7 +111,7 @@ public:
     Client(const Client &) = delete;
     Client &operator=(const Client &) = delete;
 
-    promise<json> call(std::string_view name, json data);
+    promise<json> call(std::string const &name, json data);
     void notify(std::string_view name, json data);
     promise<bool> on(std::string_view name, data_fn);
     promise<bool> off(std::string const &name);

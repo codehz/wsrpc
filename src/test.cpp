@@ -10,7 +10,16 @@ int main() {
     static RPC instance{ std::make_unique<server_wsio>("ws://127.0.0.1:16400/", ep) };
     instance.reg("test", [](auto client, json data) -> json { return data; });
     instance.reg("error", [](auto client, json data) -> json { throw std::runtime_error("expected"); });
-    signal(SIGINT, [](auto) { instance.stop(); ep->shutdown(); });
+    instance.reg(std::regex("^\\S+$"), [](auto client, auto matched, json data) -> json {
+      return json::object({
+          { "name", matched[0].str() },
+          { "data", data },
+      });
+    });
+    signal(SIGINT, [](auto) {
+      instance.stop();
+      ep->shutdown();
+    });
     instance.start();
     ep->wait();
   } catch (std::runtime_error &e) { std::cerr << e.what() << std::endl; }

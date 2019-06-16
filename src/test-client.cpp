@@ -1,7 +1,6 @@
 #include <condition_variable>
 #include <iostream>
 #include <rpcws.hpp>
-#include <thread>
 
 int main() {
   using namespace rpcws;
@@ -9,14 +8,18 @@ int main() {
 
   try {
     auto ep = std::make_shared<epoll>();
-    static RPC::Client client(std::make_unique<client_wsio>("ws://127.0.0.1:16400/", ep));
+    static RPC::Client client(std::make_unique<client_wsio>("ws://127.0.0.1:16401/", ep));
     client.start()
         .then<promise<json>>([] {
           std::cout << "ready!" << std::endl;
           return client.call("test", json::array({ "test" }));
         })
         .then<promise<json>>([](json data) {
-          std::cout << "recv: " << data.dump(2) << std::endl;
+          std::cout << "test: " << data.dump(2) << std::endl;
+          return client.call("proxied.boom", json::array({ "boom" }));
+        })
+        .then<promise<json>>([](json data) {
+          std::cout << "proxied.boom: " << data.dump(2) << std::endl;
           return client.call("error", json::array({ "boom" }));
         })
         .then([&](json data) {

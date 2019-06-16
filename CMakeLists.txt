@@ -51,8 +51,14 @@ set_property(TARGET rpcws_test PROPERTY CXX_STANDARD 17)
 add_executable(rpcwsc_test
   src/test-client.cpp
 )
-target_link_libraries(rpcwsc_test rpcws pthread)
+target_link_libraries(rpcwsc_test rpcws)
 set_property(TARGET rpcwsc_test PROPERTY CXX_STANDARD 17)
+
+add_executable(rpcwsp_test
+  src/test-proxy.cpp
+)
+target_link_libraries(rpcwsp_test rpcws)
+set_property(TARGET rpcwsp_test PROPERTY CXX_STANDARD 17)
 
 install(TARGETS rpc ws rpcws minsec
         RUNTIME DESTINATION bin

@@ -398,7 +398,12 @@ client_wsio::client_wsio(std::string_view address, std::shared_ptr<epoll> ep)
   }
 }
 
-void client_wsio::shutdown() { ep->del(fd); }
+void client_wsio::ondie(std::function<void()> ondie_cb) { ondie_cbs.emplace_back(ondie_cb); }
+
+void client_wsio::shutdown() {
+  ep->del(fd);
+  for (auto cb : ondie_cbs) cb();
+}
 
 client_wsio::~client_wsio() {
   shutdown();
@@ -407,14 +412,20 @@ client_wsio::~client_wsio() {
 
 void client_wsio::recv(recv_fn rcv, promise<void>::resolver resolver) {
   ep->add(EPOLLIN, fd, ep->reg([=](epoll_event const &e) {
-    if (e.events & EPOLLERR) return resolver.reject(InvalidSocketOp("epoll_wait"));
+    if (e.events & EPOLLERR) {
+      shutdown();
+      return resolver.reject(InvalidSocketOp("epoll_wait"));
+    }
 
     ssize_t readed = ::recv(fd, buffer.allocate(0xFFFF), 0xFFFF, 0);
     if (readed == 0) {
-      ep->del(fd);
+      shutdown();
       return;
     }
-    if (readed == -1) return resolver.reject(RecvFailed());
+    if (readed == -1) {
+      shutdown();
+      return resolver.reject(RecvFailed());
+    }
     buffer.eat(readed);
 
     Frame<Input> oframe;
@@ -434,7 +445,7 @@ void client_wsio::recv(recv_fn rcv, promise<void>::resolver resolver) {
 
     switch (type) {
     case FrameType::ERROR_FRAME: return resolver.reject(InvalidFrame{});
-    case FrameType::CLOSING_FRAME: ep->del(fd); return;
+    case FrameType::CLOSING_FRAME: shutdown(); return;
     case FrameType::PING_FRAME: safeSend(fd, makeFrame({ FrameType::PONG_FRAME }, true)); break;
     case FrameType::TEXT_FRAME: rcv(oframe.payload); break;
     default: break;
@@ -448,5 +459,7 @@ void client_wsio::send(std::string_view data) {
   auto frame = makeFrame({ FrameType::TEXT_FRAME, data }, true);
   safeSend(fd, frame);
 }
+
+bool client_wsio::alive() { return ep->has(fd); }
 
 } // namespace rpcws
