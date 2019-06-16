@@ -401,8 +401,10 @@ client_wsio::client_wsio(std::string_view address, std::shared_ptr<epoll> ep)
 void client_wsio::ondie(std::function<void()> ondie_cb) { ondie_cbs.emplace_back(ondie_cb); }
 
 void client_wsio::shutdown() {
-  ep->del(fd);
-  for (auto cb : ondie_cbs) cb();
+  if (alive()) {
+    ep->del(fd);
+    for (auto cb : ondie_cbs) cb();
+  }
 }
 
 client_wsio::~client_wsio() {
