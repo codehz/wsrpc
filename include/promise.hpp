@@ -67,12 +67,16 @@ public:
       }){};
   ~promise() {
     if (body) {
-      if constexpr (std::is_void_v<T>) {
-        body(
-            _then ?: []() {}, _fail ?: [](auto) {});
-      } else {
-        body(
-            _then ?: [](T const &) {}, _fail ?: [](auto) {});
+      try {
+        if constexpr (std::is_void_v<T>) {
+          body(
+              _then ?: []() {}, _fail ?: [](auto) {});
+        } else {
+          body(
+              _then ?: [](T const &) {}, _fail ?: [](auto) {});
+        }
+      } catch (...) {
+        (_fail ?: [](auto) {})(std::current_exception());
       }
     }
   }
