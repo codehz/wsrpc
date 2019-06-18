@@ -1,6 +1,8 @@
 #pragma once
 #include <functional>
+#include <map>
 #include <type_traits>
+#include <vector>
 
 template <typename T> class promise;
 
@@ -109,5 +111,88 @@ public:
   promise<T> &fail(fail_fn _fail) {
     this->_fail = _fail;
     return *this;
+  }
+
+  template <typename X, typename F, typename = std::enable_if_t<std::is_same_v<promise<T>, std::invoke_result_t<F, X>> && !std::is_void_v<T>>>
+  static promise<std::vector<T>> map_all(std::vector<X> &&inputs, F &&f) {
+    return promise<std::vector<T>>{ [inputs{ std::move(inputs) }, f{ std::move(f) }](auto resolver) {
+      bool invoked     = false;
+      size_t cur       = 0;
+      size_t i         = 0;
+      const size_t max = inputs.size();
+      std::map<size_t, T> results;
+      for (auto &val : inputs) {
+        f(val)
+            .then([&, i = i](auto value) {
+              results[i] = value;
+              if (++cur == max) {
+                std::vector<T> res;
+                std::transform(results.begin(), results.end(), std::back_inserter(res), [](auto pair) { return pair.second; });
+                resolver.resolve(res);
+              }
+            })
+            .fail([&](auto e) {
+              if (!invoked) {
+                invoked = true;
+                resolver.reject(e);
+              }
+            });
+        i++;
+      }
+    } };
+  }
+
+  template <typename X, typename F, typename = std::enable_if_t<std::is_same_v<promise<T>, std::invoke_result_t<F, X>> && std::is_void_v<T>>>
+  static promise<void> map_all(std::vector<X> &&inputs, F &&f) {
+    return promise<T>{ [inputs{ std::move(inputs) }, f{ std::move(f) }](auto resolver) {
+      bool invoked     = false;
+      size_t cur       = 0;
+      const size_t max = inputs.size();
+      for (auto &val : inputs) {
+        f(val)
+            .then([&] {
+              if (++cur == max) { resolver.resolve(); }
+            })
+            .fail([&](auto e) {
+              if (!invoked) {
+                invoked = true;
+                resolver.reject(e);
+              }
+            });
+      }
+    } };
+  }
+
+  template <typename X, typename F, typename = std::enable_if_t<std::is_same_v<promise<T>, std::invoke_result_t<F, X>>>>
+  static promise<T> map_any(std::vector<X> &&inputs, F &&f) {
+    return promise<T>{ [inputs{ std::move(inputs) }, f{ std::move(f) }](auto resolver) {
+      bool invoked     = false;
+      size_t cur       = 0;
+      const size_t max = inputs.size();
+      for (auto &val : inputs) {
+        if constexpr (std::is_void_v<T>)
+          f(val)
+              .then([&] {
+                if (!invoked) {
+                  invoked = true;
+                  resolver.resolve();
+                }
+              })
+              .fail([&](auto e) {
+                if (++cur == max) { resolver.reject(e); }
+              });
+        else
+          f(val)
+              .then([&](auto val) {
+                if (!invoked) {
+                  invoked = true;
+                  resolver.resolve(val);
+                }
+              })
+              .fail([&](auto e) {
+                if (++cur == max) { resolver.reject(e); }
+              });
+      }
+    } };
   }
 };

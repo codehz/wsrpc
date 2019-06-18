@@ -60,6 +60,12 @@ add_executable(rpcwsp_test
 target_link_libraries(rpcwsp_test rpcws)
 set_property(TARGET rpcwsp_test PROPERTY CXX_STANDARD 17)
 
+add_executable(promise_test
+  src/test-promise.cpp
+)
+target_link_libraries(promise_test rpcws)
+set_property(TARGET promise_test PROPERTY CXX_STANDARD 17)
+
 install(TARGETS rpc ws rpcws minsec
         RUNTIME DESTINATION bin
         LIBRARY DESTINATION lib)
