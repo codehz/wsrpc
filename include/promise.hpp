@@ -103,11 +103,29 @@ public:
     if constexpr (std::is_void_v<T>) {
       if constexpr (is_promise_v<R>)
         return R{ [=](auto th, auto fa) { next([=] { fn().then(th).fail(fa); }, fa); } };
+      else if constexpr (std::is_void_v<R>)
+        return promise<R>{ [=](auto th, auto fa) {
+          next(
+              [=]() {
+                fn();
+                th();
+              },
+              fa);
+        } };
       else
         return promise<R>{ [=](auto th, auto fa) { next([=]() { th(fn()); }, fa); } };
     } else {
       if constexpr (is_promise_v<R>)
         return R{ [=](auto th, auto fa) { next([=](T const &t) { fn(t).then(th).fail(fa); }, fa); } };
+      else if constexpr (std::is_void_v<R>)
+        return promise<R>{ [=](auto th, auto fa) {
+          next(
+              [=](T const &t) {
+                fn(t);
+                th();
+              },
+              fa);
+        } };
       else
         return promise<R>{ [=](auto th, auto fa) { next([=](T const &t) { th(fn(t)); }, fa); } };
     }
