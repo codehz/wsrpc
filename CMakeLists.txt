@@ -68,6 +68,7 @@ set_property(TARGET promise_test PROPERTY CXX_STANDARD 17)
 
 install(TARGETS rpc ws rpcws minsec
         RUNTIME DESTINATION bin
+        ARCHIVE DESTINATION lib
         LIBRARY DESTINATION lib)
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
         DESTINATION include
