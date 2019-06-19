@@ -104,28 +104,14 @@ public:
       if constexpr (is_promise_v<R>)
         return R{ [=](auto th, auto fa) { next([=] { fn().then(th).fail(fa); }, fa); } };
       else if constexpr (std::is_void_v<R>)
-        return promise<R>{ [=](auto th, auto fa) {
-          next(
-              [=]() {
-                fn();
-                th();
-              },
-              fa);
-        } };
+        return promise<R>{ [=](auto th, auto fa) { next([=]() { fn(), th(); }, fa); } };
       else
         return promise<R>{ [=](auto th, auto fa) { next([=]() { th(fn()); }, fa); } };
     } else {
       if constexpr (is_promise_v<R>)
         return R{ [=](auto th, auto fa) { next([=](T const &t) { fn(t).then(th).fail(fa); }, fa); } };
       else if constexpr (std::is_void_v<R>)
-        return promise<R>{ [=](auto th, auto fa) {
-          next(
-              [=](T const &t) {
-                fn(t);
-                th();
-              },
-              fa);
-        } };
+        return promise<R>{ [=](auto th, auto fa) { next([=](T const &t) { fn(t), th(); }, fa); } };
       else
         return promise<R>{ [=](auto th, auto fa) { next([=](T const &t) { th(fn(t)); }, fa); } };
     }
@@ -138,14 +124,11 @@ public:
   template <typename X, typename F, typename = std::enable_if_t<std::is_same_v<promise<T>, std::invoke_result_t<F, X>> && !std::is_void_v<T>>>
   static promise<std::vector<T>> map_all(std::vector<X> &&inputs, F &&f) {
     return promise<std::vector<T>>{ [inputs{ std::move(inputs) }, f{ std::move(f) }](auto resolver) {
-      bool invoked     = false;
-      size_t cur       = 0;
       size_t i         = 0;
       const size_t max = inputs.size();
-      std::map<size_t, T> results;
       for (auto &val : inputs) {
         f(val)
-            .then([&, i = i](auto value) {
+            .then([=, cur = 0, results = std::map<size_t, T>{}](auto value) mutable {
               results[i] = value;
               if (++cur == max) {
                 std::vector<T> res;
@@ -153,7 +136,7 @@ public:
                 resolver.resolve(res);
               }
             })
-            .fail([&](auto e) {
+            .fail([=, invoked = false](auto e) mutable {
               if (!invoked) {
                 invoked = true;
                 resolver.reject(e);
@@ -167,15 +150,13 @@ public:
   template <typename X, typename F, typename = std::enable_if_t<std::is_same_v<promise<T>, std::invoke_result_t<F, X>> && std::is_void_v<T>>>
   static promise<void> map_all(std::vector<X> &&inputs, F &&f) {
     return promise<T>{ [inputs{ std::move(inputs) }, f{ std::move(f) }](auto resolver) {
-      bool invoked     = false;
-      size_t cur       = 0;
       const size_t max = inputs.size();
       for (auto &val : inputs) {
         f(val)
-            .then([&] {
+            .then([=, cur = 0]() mutable {
               if (++cur == max) { resolver.resolve(); }
             })
-            .fail([&](auto e) {
+            .fail([=, invoked = false](auto e) mutable {
               if (!invoked) {
                 invoked = true;
                 resolver.reject(e);
@@ -188,30 +169,28 @@ public:
   template <typename X, typename F, typename = std::enable_if_t<std::is_same_v<promise<T>, std::invoke_result_t<F, X>>>>
   static promise<T> map_any(std::vector<X> &&inputs, F &&f) {
     return promise<T>{ [inputs{ std::move(inputs) }, f{ std::move(f) }](auto resolver) {
-      bool invoked     = false;
-      size_t cur       = 0;
       const size_t max = inputs.size();
       for (auto &val : inputs) {
         if constexpr (std::is_void_v<T>)
           f(val)
-              .then([&] {
+              .then([=, invoked = false]() mutable {
                 if (!invoked) {
                   invoked = true;
                   resolver.resolve();
                 }
               })
-              .fail([&](auto e) {
+              .fail([=, cur = 0](auto e) mutable {
                 if (++cur == max) { resolver.reject(e); }
               });
         else
           f(val)
-              .then([&](auto val) {
+              .then([=, invoked = false](auto val) mutable {
                 if (!invoked) {
                   invoked = true;
                   resolver.resolve(val);
                 }
               })
-              .fail([&](auto e) {
+              .fail([=, cur = 0](auto e) mutable {
                 if (++cur == max) { resolver.reject(e); }
               });
       }
