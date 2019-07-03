@@ -70,10 +70,10 @@ struct server_wsio : server_io {
     result handle(recv_fn const &);
 
   private:
-    int fd;
+    int fd = {};
     std::string_view path;
-    State state;
-    FrameType type;
+    State state    = {};
+    FrameType type = {};
     Buffer buffer;
   };
 
@@ -108,7 +108,7 @@ private:
   std::shared_ptr<epoll> ep;
   std::string path, key;
   Buffer buffer;
-  State state;
+  State state = {};
 };
 
 } // namespace rpcws
