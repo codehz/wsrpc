@@ -11,6 +11,44 @@
 
 namespace rpcws {
 
+#if OPENSSL_ENABLED
+SSLError::SSLError()
+    : errcode(ERR_get_error()) {
+  ERR_error_string_n(errcode, buffer, sizeof buffer);
+}
+SSLError::SSLError(unsigned long errcode)
+    : errcode(errcode) {
+  ERR_error_string_n(errcode, buffer, sizeof buffer);
+}
+const char *SSLError::what() const noexcept { return buffer; }
+
+ssl_context::ssl_context(std::filesystem::path cert, std::filesystem::path priv) {
+  auto method = TLS_server_method();
+  ctx         = SSL_CTX_new(method);
+  if (!ctx) throw SSLError{};
+  SSL_CTX_set_ecdh_auto(ctx, true);
+  if (SSL_CTX_use_certificate_file(ctx, cert.c_str(), SSL_FILETYPE_PEM) <= 0) throw SSLError{};
+  if (SSL_CTX_use_PrivateKey_file(ctx, priv.c_str(), SSL_FILETYPE_PEM) <= 0) throw SSLError{};
+}
+ssl_context::ssl_context() {
+  auto method = TLS_client_method();
+  ctx         = SSL_CTX_new(method);
+  if (!ctx) throw SSLError{};
+}
+ssl_context::~ssl_context() { SSL_CTX_free(ctx); }
+
+ssl_client::ssl_client(ssl_context const &sslctx, int fd, bool do_connect) {
+  client = SSL_new(sslctx.ctx);
+  SSL_set_fd(client, fd);
+  if ((do_connect ? SSL_connect : SSL_accept)(client) < 0) throw SSLError{};
+}
+void ssl_client::shutdown() { SSL_shutdown(client); }
+ssl_client::~ssl_client() {
+  shutdown();
+  SSL_free(client);
+}
+#endif
+
 Buffer::Buffer() {}
 
 char *Buffer::allocate(size_t size) {
@@ -79,11 +117,26 @@ InvalidFrame::InvalidFrame()
 
 void safeSend(int fd, std::string_view data) {
   while (!data.empty()) {
-    auto sent = send(fd, &data[0], data.size(), MSG_NOSIGNAL);
+    auto sent = ::send(fd, &data[0], data.size(), MSG_NOSIGNAL);
     if (sent == -1 || sent == 0) throw SendFailed();
     data.remove_prefix(sent);
   }
 }
+
+#if OPENSSL_ENABLED
+void safeSend(ssl_client *ssl, int fd, std::string_view data) {
+  while (!data.empty()) {
+    ssize_t sent = 0;
+    if (ssl)
+      sent = SSL_write(ssl->client, &data[0], data.size());
+    else
+      sent = ::send(fd, &data[0], data.size(), MSG_NOSIGNAL);
+    if (sent == -1 || sent == 0) throw SendFailed();
+    data.remove_prefix(sent);
+  }
+}
+#define safeSend(fd, data) safeSend(ssl.get(), fd, data)
+#endif
 
 bool starts_with(std::string_view &full, std::string_view part) {
   bool res = full.compare(0, part.length(), part) == 0;
@@ -164,6 +217,76 @@ server_wsio::server_wsio(std::string_view address, std::shared_ptr<epoll> ep)
     throw InvalidAddress();
 }
 
+#if OPENSSL_ENABLED
+server_wsio::server_wsio(std::unique_ptr<ssl_context> context, std::string_view address, std::shared_ptr<epoll> ep)
+    : ep(std::move(ep))
+    , ssl(std::move(context)) {
+  if (starts_with(address, "wss://")) {
+    auto end = address.find_first_of("[:/");
+    if (end == std::string_view::npos) throw InvalidAddress();
+    bool quoted = false;
+    if (address[end] == '[') {
+      quoted = true;
+      end    = address.find(']');
+      if (end == std::string_view::npos) throw InvalidAddress();
+      end++;
+    }
+    auto host = eat(address, end);
+    if (quoted) {
+      host.remove_prefix(1);
+      host.remove_suffix(1);
+    }
+    std::string_view port = "443";
+    if (address[0] == ':') {
+      address.remove_prefix(1);
+      end = address.find('/');
+      if (end == std::string_view::npos) throw InvalidAddress();
+      port = eat(address, end);
+    }
+    path = eat(address, address.find_first_of("?#"));
+    {
+      std::string host_str{ host };
+      std::string port_str{ port };
+      addrinfo hints = {
+        .ai_flags    = AI_PASSIVE,
+        .ai_family   = AF_UNSPEC,
+        .ai_socktype = SOCK_STREAM,
+      };
+      addrinfo *list;
+      auto ret = getaddrinfo(host_str.c_str(), port_str.c_str(), &hints, &list);
+      if (ret != 0) throw InvalidAddress();
+      fd               = socket(list->ai_family, list->ai_socktype | SOCK_CLOEXEC, list->ai_protocol);
+      std::string addr = { (char *)list->ai_addr, list->ai_addrlen };
+      freeaddrinfo(list);
+      if (fd == -1) throw InvalidSocketOp("socket");
+      int yes = 1;
+      ret     = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+      if (ret != 0) throw InvalidSocketOp("setsockopt");
+      ret = bind(fd, (sockaddr *)&addr[0], addr.length());
+      if (ret != 0) throw InvalidSocketOp("bind");
+      ret = listen(fd, 0xFF);
+      if (ret != 0) throw InvalidSocketOp("listen");
+    }
+  } else if (starts_with(address, "wss+unix://")) {
+    std::string host{ address };
+    if (host.length() >= 108) throw InvalidAddress();
+    path = "/";
+    {
+      sockaddr_un addr = { .sun_family = AF_UNIX };
+      memcpy(addr.sun_path, &host[0], host.length());
+      fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+      if (fd == -1) throw InvalidSocketOp("socket");
+      unlink(host.c_str());
+      auto ret = bind(fd, (sockaddr *)&addr, sizeof(sockaddr_un));
+      if (ret != 0) throw InvalidSocketOp("bind");
+      ret = listen(fd, 0xFF);
+      if (ret != 0) throw InvalidSocketOp("listen");
+    }
+  } else
+    throw InvalidAddress();
+}
+#endif
+
 server_wsio::~server_wsio() {
   shutdown();
   close(fd);
@@ -203,7 +326,12 @@ void server_wsio::accept(accept_fn process, recv_fn rcv) {
     socklen_t len       = sizeof(ad);
     auto remote         = ::accept4(fd, (sockaddr *)&ad, &len, SOCK_CLOEXEC);
     if (remote == -1) throw InvalidSocketOp("accept");
-    fdmap[remote] = std::make_shared<server_wsio::client>(remote, path);
+#if OPENSSL_ENABLED
+    if (ssl)
+      fdmap[remote] = std::make_shared<server_wsio::client>(std::make_shared<ssl_client>(*ssl, remote, false), remote, path);
+    else
+#endif
+      fdmap[remote] = std::make_shared<server_wsio::client>(remote, path);
     ep->add(EPOLLIN, remote, client_id);
   }));
 }
@@ -223,9 +351,21 @@ server_wsio::client::client(int fd, std::string_view path)
     , state(State::STATE_OPENING)
     , type(FrameType::INCOMPLETE_FRAME) {}
 
+#if OPENSSL_ENABLED
+server_wsio::client::client(std::shared_ptr<ssl_client> ssl, int fd, std::string_view path)
+    : ssl(ssl)
+    , fd(fd)
+    , path(path)
+    , state(State::STATE_OPENING)
+    , type(FrameType::INCOMPLETE_FRAME) {}
+#endif
+
 server_wsio::client::~client() { shutdown(); }
 
 void server_wsio::client::shutdown() {
+#if OPENSSL_ENABLED
+  if (ssl) ssl->shutdown();
+#endif
   ::shutdown(fd, SHUT_WR);
   close(fd);
 }
@@ -235,7 +375,13 @@ server_wsio::client::result server_wsio::client::handle(server_wsio::recv_fn con
   Frame<Output> oframe;
 
   if (type != FrameType::INCOMPLETE_FRAME) return result::STOPPED;
-  ssize_t readed = ::recv(fd, buffer.allocate(0xFFFF), 0xFFFF, 0);
+  ssize_t readed = 0;
+#if OPENSSL_ENABLED
+  if (ssl)
+    readed = SSL_read(ssl->client, buffer.allocate(0xFFFF), 0xFFFF);
+  else
+#endif
+    readed = ::recv(fd, buffer.allocate(0xFFFF), 0xFFFF, 0);
   if (readed == 0) return result::STOPPED;
   if (readed == -1) { throw RecvFailed(); }
   buffer.eat(readed);
@@ -398,6 +544,90 @@ client_wsio::client_wsio(std::string_view address, std::shared_ptr<epoll> ep)
   }
 }
 
+#if OPENSSL_ENABLED
+client_wsio::client_wsio(std::unique_ptr<ssl_context> context, std::string_view address, std::shared_ptr<epoll> ep)
+    : ep(std::move(ep))
+    , sslctx(std::move(context)) {
+  std::string hoststr;
+  if (starts_with(address, "wss://")) {
+    auto end = address.find_first_of("[:/");
+    if (end == std::string_view::npos) throw InvalidAddress();
+    bool quoted = false;
+    if (address[end] == '[') {
+      quoted = true;
+      end    = address.find(']');
+      if (end == std::string_view::npos) throw InvalidAddress();
+      end++;
+    }
+    auto host = eat(address, end);
+    if (quoted) {
+      host.remove_prefix(1);
+      host.remove_suffix(1);
+    }
+    hoststr               = host;
+    std::string_view port = "443";
+    if (address[0] == ':') {
+      address.remove_prefix(1);
+      end = address.find('/');
+      if (end == std::string_view::npos) throw InvalidAddress();
+      port = eat(address, end);
+    }
+    path = eat(address, address.find_first_of("?#"));
+    {
+      std::string host_str{ host };
+      std::string port_str{ port };
+      addrinfo hints = {
+        .ai_flags    = AI_PASSIVE,
+        .ai_family   = AF_UNSPEC,
+        .ai_socktype = SOCK_STREAM,
+      };
+      addrinfo *list;
+      auto ret = getaddrinfo(host_str.c_str(), port_str.c_str(), &hints, &list);
+      if (ret != 0) throw InvalidAddress();
+      fd               = socket(list->ai_family, list->ai_socktype | SOCK_CLOEXEC, list->ai_protocol);
+      std::string addr = { (char *)list->ai_addr, list->ai_addrlen };
+      freeaddrinfo(list);
+      if (fd == -1) throw InvalidSocketOp("socket");
+      ret = connect(fd, (sockaddr *)&addr[0], addr.length());
+      if (ret == -1) throw InvalidSocketOp("connect");
+    }
+  } else if (starts_with(address, "wss+unix://")) {
+    hoststr = address;
+    if (hoststr.length() >= 108) throw InvalidAddress();
+    path = "/";
+    {
+      sockaddr_un addr = { .sun_family = AF_UNIX };
+      memcpy(addr.sun_path, &hoststr[0], hoststr.length());
+      fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+      if (fd == -1) throw InvalidSocketOp("socket");
+      auto ret = connect(fd, (sockaddr *)&addr, sizeof(sockaddr_un));
+      if (ret == -1) throw InvalidSocketOp("connect");
+    }
+  } else
+    throw InvalidAddress();
+
+  ssl = std::make_shared<ssl_client>(*sslctx, fd, true);
+
+  union {
+    uint64_t u2[2] = { std::experimental::randint((uint64_t)0, UINT64_MAX), std::experimental::randint((uint64_t)0, UINT64_MAX) };
+    char b16[16];
+  };
+
+  key = base64(b16);
+
+  {
+    auto handshake = makeHandshake({
+        .type     = FrameType::OPENING_FRAME,
+        .host     = hoststr,
+        .origin   = hoststr,
+        .key      = key,
+        .resource = path,
+    });
+    safeSend(fd, handshake);
+  }
+}
+#endif
+
 void client_wsio::ondie(std::function<void()> ondie_cb) { ondie_cbs.emplace_back(ondie_cb); }
 
 void client_wsio::shutdown() {
@@ -408,6 +638,9 @@ void client_wsio::shutdown() {
 }
 
 client_wsio::~client_wsio() {
+#if OPENSSL_ENABLED
+  if (ssl) ssl->shutdown();
+#endif
   shutdown();
   close(fd);
 }
@@ -419,7 +652,13 @@ void client_wsio::recv(recv_fn rcv, promise<void>::resolver resolver) {
       return resolver.reject(InvalidSocketOp("epoll_wait"));
     }
 
-    ssize_t readed = ::recv(fd, buffer.allocate(0xFFFF), 0xFFFF, 0);
+    ssize_t readed = 0;
+#if OPENSSL_ENABLED
+    if (ssl)
+      readed = SSL_read(ssl->client, buffer.allocate(0xFFFF), 0xFFFF);
+    else
+#endif
+      readed = ::recv(fd, buffer.allocate(0xFFFF), 0xFFFF, 0);
     if (readed == 0) {
       shutdown();
       return;

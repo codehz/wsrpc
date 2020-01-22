@@ -1,9 +1,18 @@
-cmake_minimum_required(VERSION 3.3)
+cmake_minimum_required(VERSION 3.7)
 
 project(rpc-websocket)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(OPENSSL OFF CACHE BOOL "Add OpenSSL support for wss")
 add_compile_options(-Wall -Werror)
+
+add_library(ssl INTERFACE)
+
+if (OPENSSL)
+  find_package(OpenSSL REQUIRED)
+  target_link_libraries(ssl INTERFACE OpenSSL::SSL OpenSSL::Crypto)
+  target_compile_definitions(ssl INTERFACE OPENSSL_ENABLED=1)
+endif()
 
 add_library(minsec
   sec/sha1.c
@@ -39,7 +48,7 @@ add_library(rpcws
   src/rpcws.cpp
   include/rpcws.hpp
 )
-target_link_libraries(rpcws rpc ws)
+target_link_libraries(rpcws rpc ws ssl)
 target_include_directories(rpcws PUBLIC include)
 set_property(TARGET rpcws PROPERTY CXX_STANDARD 17)
 
@@ -66,6 +75,20 @@ add_executable(promise_test
 )
 target_link_libraries(promise_test rpcws)
 set_property(TARGET promise_test PROPERTY CXX_STANDARD 17)
+
+if (OPENSSL)
+  add_executable(rpcws_sslserver
+    src/test-sslserver.cpp
+  )
+  target_link_libraries(rpcws_sslserver rpcws)
+  set_property(TARGET rpcws_sslserver PROPERTY CXX_STANDARD 17)
+
+  add_executable(rpcws_sslclient
+    src/test-sslclient.cpp
+  )
+  target_link_libraries(rpcws_sslclient rpcws)
+  set_property(TARGET rpcws_sslclient PROPERTY CXX_STANDARD 17)
+endif()
 
 install(TARGETS rpc ws rpcws minsec
         RUNTIME DESTINATION bin
