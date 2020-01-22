@@ -22,7 +22,7 @@ public:
 
   char *allocate(size_t size) {
     if (start) {
-      if (allocated - head < size) {
+      if (static_cast<size_t>(allocated - head) < size) {
         auto temp       = new char[allocated - start + size];
         auto nstart     = temp;
         auto nend       = temp + (head - start);
@@ -44,7 +44,7 @@ public:
 
   void drop(size_t size) {
     if (!size) return;
-    if (size == head - start) {
+    if (size == static_cast<size_t>(head - start)) {
       head = start;
     } else {
       head -= size;

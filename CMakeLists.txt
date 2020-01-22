@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.3)
 project(rpc-websocket)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+add_compile_options(-Wall -Werror)
 
 add_library(minsec
   sec/sha1.c

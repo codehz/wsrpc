@@ -162,7 +162,6 @@ Data<Input> parseHandshakeAnswer(Data<Input> input, Data<Input> key) {
 
   bool upgrade              = false;
   bool connection           = false;
-  bool accept               = false;
   std::string_view protocol = "";
   while (input.length() != 0) {
     auto end = input.find(rn);
@@ -252,7 +251,14 @@ std::tuple<uint64_t, char, FrameType> getPayloadLength(Data<Input> input, ws_hea
 Frame<Output> parseFrame(Data<Input> input) {
   if (input.length() < 2) return { FrameType::INCOMPLETE_FRAME };
   ws_header header{};
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER) && (((__GNUC__ * 100) + __GNUC_MINOR__) >= 800)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wclass-memaccess"
+#endif
   memcpy(&header, &input[0], 2);
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER) && (((__GNUC__ * 100) + __GNUC_MINOR__) >= 800)
+#pragma GCC diagnostic pop
+#endif
   if (!header.fin || header.rsv != 0 || !header.mask) return { FrameType::ERROR_FRAME };
   auto [payloadLength, extraBytes, opcode] = getPayloadLength(input, header);
   if (opcode == FrameType::TEXT_FRAME || opcode == FrameType::BINARY_FRAME || opcode == FrameType::CLOSING_FRAME || opcode == FrameType::PING_FRAME ||
@@ -269,7 +275,14 @@ Frame<Output> parseFrame(Data<Input> input) {
 Frame<Input> parseServerFrame(Data<Input> input) {
   if (input.length() < 2) return { FrameType::INCOMPLETE_FRAME };
   ws_header header{};
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER) && (((__GNUC__ * 100) + __GNUC_MINOR__) >= 800)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wclass-memaccess"
+#endif
   memcpy(&header, &input[0], 2);
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER) && (((__GNUC__ * 100) + __GNUC_MINOR__) >= 800)
+#pragma GCC diagnostic pop
+#endif
   if (!header.fin || header.rsv != 0 || header.mask) return { FrameType::ERROR_FRAME };
   auto [payloadLength, extraBytes, opcode] = getPayloadLength(input, header);
   if (opcode == FrameType::TEXT_FRAME || opcode == FrameType::BINARY_FRAME || opcode == FrameType::CLOSING_FRAME || opcode == FrameType::PING_FRAME ||

@@ -128,7 +128,7 @@ public:
       const size_t max = inputs.size();
       for (auto &val : inputs) {
         f(val)
-            .then([=, cur = 0, results = std::map<size_t, T>{}](auto value) mutable {
+            .then([=, cur = size_t(0), results = std::map<size_t, T>{}](auto value) mutable {
               results[i] = value;
               if (++cur == max) {
                 std::vector<T> res;
@@ -153,7 +153,7 @@ public:
       const size_t max = inputs.size();
       for (auto &val : inputs) {
         f(val)
-            .then([=, cur = 0]() mutable {
+            .then([=, cur = size_t(0)]() mutable {
               if (++cur == max) { resolver.resolve(); }
             })
             .fail([=, invoked = false](auto e) mutable {
@@ -179,7 +179,7 @@ public:
                   resolver.resolve();
                 }
               })
-              .fail([=, cur = 0](auto e) mutable {
+              .fail([=, cur = size_t(0)](auto e) mutable {
                 if (++cur == max) { resolver.reject(e); }
               });
         else
@@ -190,7 +190,7 @@ public:
                   resolver.resolve(val);
                 }
               })
-              .fail([=, cur = 0](auto e) mutable {
+              .fail([=, cur = size_t(0)](auto e) mutable {
                 if (++cur == max) { resolver.reject(e); }
               });
       }

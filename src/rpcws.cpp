@@ -15,7 +15,7 @@ Buffer::Buffer() {}
 
 char *Buffer::allocate(size_t size) {
   if (start) {
-    if (allocated - head < size) {
+    if (static_cast<size_t>(allocated - head) < size) {
       auto temp       = new char[allocated - start + size];
       auto nstart     = temp;
       auto nend       = temp + (head - start);
@@ -37,7 +37,7 @@ void Buffer::eat(size_t size) { head += size; }
 
 void Buffer::drop(size_t size) {
   if (!size) return;
-  if (size == head - start) {
+  if (size == static_cast<size_t>(head - start)) {
     head = start;
   } else {
     head -= size;
@@ -220,8 +220,8 @@ void server_wsio::shutdown() {
 server_wsio::client::client(int fd, std::string_view path)
     : fd(fd)
     , path(path)
-    , type(FrameType::INCOMPLETE_FRAME)
-    , state(State::STATE_OPENING) {}
+    , state(State::STATE_OPENING)
+    , type(FrameType::INCOMPLETE_FRAME) {}
 
 server_wsio::client::~client() { shutdown(); }
 
