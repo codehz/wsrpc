@@ -4,6 +4,7 @@ project(rpc-websocket)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(OPENSSL OFF CACHE BOOL "Add OpenSSL support for wss")
+set(DEMO OFF CACHE BOOL "Building demo")
 add_compile_options(-Wall -Werror)
 
 add_library(ssl INTERFACE)
@@ -52,42 +53,44 @@ target_link_libraries(rpcws rpc ws ssl)
 target_include_directories(rpcws PUBLIC include)
 set_property(TARGET rpcws PROPERTY CXX_STANDARD 17)
 
-add_executable(rpcws_test
-  src/test.cpp
-)
-target_link_libraries(rpcws_test rpcws)
-set_property(TARGET rpcws_test PROPERTY CXX_STANDARD 17)
-
-add_executable(rpcwsc_test
-  src/test-client.cpp
-)
-target_link_libraries(rpcwsc_test rpcws)
-set_property(TARGET rpcwsc_test PROPERTY CXX_STANDARD 17)
-
-add_executable(rpcwsp_test
-  src/test-proxy.cpp
-)
-target_link_libraries(rpcwsp_test rpcws)
-set_property(TARGET rpcwsp_test PROPERTY CXX_STANDARD 17)
-
-add_executable(promise_test
-  src/test-promise.cpp
-)
-target_link_libraries(promise_test rpcws)
-set_property(TARGET promise_test PROPERTY CXX_STANDARD 17)
-
-if (OPENSSL)
-  add_executable(rpcws_sslserver
-    src/test-sslserver.cpp
+if (DEMO)
+  add_executable(rpcws_test
+    src/test.cpp
   )
-  target_link_libraries(rpcws_sslserver rpcws)
-  set_property(TARGET rpcws_sslserver PROPERTY CXX_STANDARD 17)
+  target_link_libraries(rpcws_test rpcws)
+  set_property(TARGET rpcws_test PROPERTY CXX_STANDARD 17)
 
-  add_executable(rpcws_sslclient
-    src/test-sslclient.cpp
+  add_executable(rpcwsc_test
+    src/test-client.cpp
   )
-  target_link_libraries(rpcws_sslclient rpcws)
-  set_property(TARGET rpcws_sslclient PROPERTY CXX_STANDARD 17)
+  target_link_libraries(rpcwsc_test rpcws)
+  set_property(TARGET rpcwsc_test PROPERTY CXX_STANDARD 17)
+
+  add_executable(rpcwsp_test
+    src/test-proxy.cpp
+  )
+  target_link_libraries(rpcwsp_test rpcws)
+  set_property(TARGET rpcwsp_test PROPERTY CXX_STANDARD 17)
+
+  add_executable(promise_test
+    src/test-promise.cpp
+  )
+  target_link_libraries(promise_test rpcws)
+  set_property(TARGET promise_test PROPERTY CXX_STANDARD 17)
+
+  if (OPENSSL)
+    add_executable(rpcws_sslserver
+      src/test-sslserver.cpp
+    )
+    target_link_libraries(rpcws_sslserver rpcws)
+    set_property(TARGET rpcws_sslserver PROPERTY CXX_STANDARD 17)
+
+    add_executable(rpcws_sslclient
+      src/test-sslclient.cpp
+    )
+    target_link_libraries(rpcws_sslclient rpcws)
+    set_property(TARGET rpcws_sslclient PROPERTY CXX_STANDARD 17)
+  endif()
 endif()
 
 install(TARGETS rpc ws rpcws minsec
