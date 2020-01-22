@@ -327,12 +327,16 @@ void server_wsio::accept(accept_fn process, recv_fn rcv) {
     auto remote         = ::accept4(fd, (sockaddr *)&ad, &len, SOCK_CLOEXEC);
     if (remote == -1) throw InvalidSocketOp("accept");
 #if OPENSSL_ENABLED
-    if (ssl)
-      fdmap[remote] = std::make_shared<server_wsio::client>(std::make_shared<ssl_client>(*ssl, remote, false), remote, path);
-    else
+    try {
+      if (ssl)
+        fdmap[remote] = std::make_shared<server_wsio::client>(std::make_shared<ssl_client>(*ssl, remote, false), remote, path);
+      else
 #endif
-      fdmap[remote] = std::make_shared<server_wsio::client>(remote, path);
-    ep->add(EPOLLIN, remote, client_id);
+        fdmap[remote] = std::make_shared<server_wsio::client>(remote, path);
+      ep->add(EPOLLIN, remote, client_id);
+#if OPENSSL_ENABLED
+    } catch (SSLError const &e) { close(remote); }
+#endif
   }));
 }
 
