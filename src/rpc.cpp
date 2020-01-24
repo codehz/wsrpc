@@ -4,8 +4,9 @@
 
 namespace rpc {
 
-RPC::RPC(decltype(io) &&io)
-    : io(std::move(io)) {
+RPC::RPC(decltype(io) &&io, binary_frame_handler_t handler)
+    : io(std::move(io))
+    , binary_frame_handler_ref(handler) {
   reg("rpc.on", [this](std::shared_ptr<server_io::client> client, json input) -> json {
     if (input.is_array()) {
       std::map<std::string, std::string> lists;
@@ -140,8 +141,9 @@ static inline void handle_exception(std::exception_ptr ep, std::recursive_mutex 
 template <class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
 template <class... Ts> overloaded(Ts...)->overloaded<Ts...>;
 
-void RPC::incoming(std::shared_ptr<server_io::client> client, std::string_view data) {
+void RPC::incoming(std::shared_ptr<server_io::client> client, std::string_view data, message_type type) {
   try {
+    if (type == message_type::BINARY) return (*binary_frame_handler_ref)(client, data);
     auto parsed = json::parse(data);
     if (!parsed.is_object()) throw Invalid{ "object required" };
     if (parsed["jsonrpc"] != "2.0") throw Invalid{ "jsonrpc version mismatch" };
@@ -234,8 +236,9 @@ void RPC::incoming(std::shared_ptr<server_io::client> client, std::string_view d
   }
 }
 
-RPC::Client::Client(std::unique_ptr<client_io> &&io)
-    : io(std::move(io)) {}
+RPC::Client::Client(std::unique_ptr<client_io> &&io, binary_frame_handler_t handler)
+    : io(std::move(io))
+    , binary_frame_handler_ref(handler) {}
 
 RPC::Client::~Client() { io->shutdown(); }
 
@@ -265,8 +268,9 @@ promise<bool> RPC::Client::off(std::string const &name) {
   return call("rpc.off", json::array({ name })).then<bool>([name = name](json ret) { return ret.is_object() && ret[name] == "ok"; });
 }
 
-void RPC::Client::incoming(std::string_view data) {
+void RPC::Client::incoming(std::string_view data, message_type type) {
   try {
+    if (type == message_type::BINARY) return (*binary_frame_handler_ref)(data);
     auto parsed = json::parse(data);
     if (!parsed.is_object()) throw Invalid{ "object required" };
     if (parsed.contains("notification")) {
@@ -300,7 +304,7 @@ void RPC::Client::incoming(std::string_view data) {
 }
 
 promise<void> RPC::Client::start() {
-  return { [this](auto resolver) { this->io->recv([=](auto data) { incoming(data); }, resolver); } };
+  return { [this](auto resolver) { this->io->recv([=](auto... x) { incoming(x...); }, resolver); } };
 }
 
 void RPC::Client::stop() {

@@ -1,3 +1,5 @@
+#include "rpc.hpp"
+#include "ws.hpp"
 #include <experimental/random>
 #include <netdb.h>
 #include <rpcws.hpp>
@@ -439,7 +441,8 @@ server_wsio::client::result server_wsio::client::handle(server_wsio::recv_fn con
       }
       return result::STOPPED;
     case FrameType::PING_FRAME: safeSend(fd, makeFrame({ FrameType::PONG_FRAME })); break;
-    case FrameType::TEXT_FRAME: process(shared_from_this(), oframe.payload); break;
+    case FrameType::TEXT_FRAME: process(shared_from_this(), oframe.payload, message_type::TEXT); break;
+    case FrameType::BINARY_FRAME: process(shared_from_this(), oframe.payload, message_type::BINARY); break;
     default: break;
     }
     type = FrameType::INCOMPLETE_FRAME;
@@ -449,7 +452,9 @@ server_wsio::client::result server_wsio::client::handle(server_wsio::recv_fn con
   return result::EMPTY;
 }
 
-void server_wsio::client::send(std::string_view data) { safeSend(fd, makeFrame({ FrameType::TEXT_FRAME, data })); }
+void server_wsio::client::send(std::string_view data, message_type type) {
+  safeSend(fd, makeFrame({ type == message_type::BINARY ? FrameType::BINARY_FRAME : FrameType::TEXT_FRAME, data }));
+}
 
 std::string base64(std::string_view input) {
   constexpr char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -692,7 +697,8 @@ void client_wsio::recv(recv_fn rcv, promise<void>::resolver resolver) {
     case FrameType::ERROR_FRAME: return resolver.reject(InvalidFrame{});
     case FrameType::CLOSING_FRAME: shutdown(); return;
     case FrameType::PING_FRAME: safeSend(fd, makeFrame({ FrameType::PONG_FRAME }, true)); break;
-    case FrameType::TEXT_FRAME: rcv(oframe.payload); break;
+    case FrameType::TEXT_FRAME: rcv(oframe.payload, message_type::TEXT); break;
+    case FrameType::BINARY_FRAME: rcv(oframe.payload, message_type::BINARY); break;
     default: break;
     }
     buffer.drop(oframe.eaten);
@@ -700,8 +706,8 @@ void client_wsio::recv(recv_fn rcv, promise<void>::resolver resolver) {
   }));
 }
 
-void client_wsio::send(std::string_view data) {
-  auto frame = makeFrame({ FrameType::TEXT_FRAME, data }, true);
+void client_wsio::send(std::string_view data, message_type type) {
+  auto frame = makeFrame({ type == message_type::BINARY ? FrameType::BINARY_FRAME : FrameType::TEXT_FRAME, data }, true);
   safeSend(fd, frame);
 }
 

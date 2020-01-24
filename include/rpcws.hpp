@@ -111,7 +111,7 @@ struct server_wsio : server_io {
 #endif
     ~client() override;
     void shutdown() override;
-    void send(std::string_view) override;
+    void send(std::string_view, message_type type) override;
     result handle(recv_fn const &);
 
   private:
@@ -153,7 +153,7 @@ struct client_wsio : client_io {
   ~client_wsio();
   void shutdown() override;
   void recv(recv_fn, promise<void>::resolver) override;
-  void send(std::string_view) override;
+  void send(std::string_view, message_type type) override;
   bool alive() override;
   void ondie(std::function<void()>) override;
 
