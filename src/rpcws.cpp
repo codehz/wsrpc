@@ -299,23 +299,27 @@ struct AutoClose {
   ~AutoClose() { close(fd); }
 };
 
-void server_wsio::accept(accept_fn process, recv_fn rcv) {
+void server_wsio::accept(accept_fn process, remove_fn del, recv_fn rcv) {
   auto client_id = ep->reg([=](epoll_event const &e) {
     if (auto it = fdmap.find(e.data.fd); it != fdmap.end()) {
       auto &[remote, client] = *it;
       try {
         if (e.events & EPOLLERR) {
           throw InvalidSocketOp("epoll");
-        } else {
+        } else if (e.events & EPOLLIN) {
           switch (client->handle(rcv)) {
           case client::result::ACCEPT: process(client); break;
           case client::result::STOPPED: throw CommonException();
           case client::result::EMPTY: break;
           }
+        } else {
+          throw CommonException();
         }
-      } catch (std::runtime_error &e) {
+      } catch (...) {
+        del(it->second);
         ep->del(remote);
         fdmap.erase(it);
+        close(remote);
       }
     }
   });
@@ -335,7 +339,7 @@ void server_wsio::accept(accept_fn process, recv_fn rcv) {
       else
 #endif
         fdmap[remote] = std::make_shared<server_wsio::client>(remote, path);
-      ep->add(EPOLLIN, remote, client_id);
+      ep->add(EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLRDHUP, remote, client_id);
 #if OPENSSL_ENABLED
     } catch (SSLError const &e) { close(remote); }
 #endif

@@ -130,7 +130,7 @@ struct server_wsio : server_io {
   server_wsio(std::unique_ptr<ssl_context> context, std::string_view address, std::shared_ptr<epoll> ep = std::make_shared<epoll>());
 #endif
   ~server_wsio() override;
-  void accept(accept_fn, recv_fn rcv) override;
+  void accept(accept_fn, remove_fn, recv_fn) override;
   void shutdown() override;
 
   inline epoll &handler() { return *ep; }

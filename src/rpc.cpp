@@ -4,9 +4,9 @@
 
 namespace rpc {
 
-RPC::RPC(decltype(io) &&io, binary_frame_handler_t handler)
+RPC::RPC(decltype(io) &&io, callback_ref_t handler)
     : io(std::move(io))
-    , binary_frame_handler_ref(handler) {
+    , callback_ref(handler) {
   reg("rpc.on", [this](std::shared_ptr<server_io::client> client, json input) -> json {
     if (input.is_array()) {
       std::map<std::string, std::string> lists;
@@ -101,7 +101,8 @@ void RPC::unreg(size_t uid) {
 }
 
 void RPC::start() {
-  io->accept([](auto...) {}, [this](auto... x) { incoming(x...); });
+  io->accept([this](auto client) { callback_ref->on_accept(client); }, [this](auto client) { callback_ref->on_remove(client); },
+             [this](auto... x) { incoming(x...); });
 }
 
 void RPC::stop() { io->shutdown(); }
@@ -143,7 +144,7 @@ template <class... Ts> overloaded(Ts...)->overloaded<Ts...>;
 
 void RPC::incoming(std::shared_ptr<server_io::client> client, std::string_view data, message_type type) {
   try {
-    if (type == message_type::BINARY) return (*binary_frame_handler_ref)(client, data);
+    if (type == message_type::BINARY) return callback_ref->on_binary(client, data);
     auto parsed = json::parse(data);
     if (!parsed.is_object()) throw Invalid{ "object required" };
     if (parsed["jsonrpc"] != "2.0") throw Invalid{ "jsonrpc version mismatch" };
@@ -236,9 +237,9 @@ void RPC::incoming(std::shared_ptr<server_io::client> client, std::string_view d
   }
 }
 
-RPC::Client::Client(std::unique_ptr<client_io> &&io, binary_frame_handler_t handler)
+RPC::Client::Client(std::unique_ptr<client_io> &&io, callback_ref_t handler)
     : io(std::move(io))
-    , binary_frame_handler_ref(handler) {}
+    , callback_ref(handler) {}
 
 RPC::Client::~Client() { io->shutdown(); }
 
@@ -270,7 +271,7 @@ promise<bool> RPC::Client::off(std::string const &name) {
 
 void RPC::Client::incoming(std::string_view data, message_type type) {
   try {
-    if (type == message_type::BINARY) return (*binary_frame_handler_ref)(data);
+    if (type == message_type::BINARY) return callback_ref->on_binary(data);
     auto parsed = json::parse(data);
     if (!parsed.is_object()) throw Invalid{ "object required" };
     if (parsed.contains("notification")) {

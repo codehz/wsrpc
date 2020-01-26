@@ -36,14 +36,15 @@ struct server_io {
   struct client;
   using recv_fn   = std::function<void(std::shared_ptr<client>, std::string_view, message_type type)>;
   using accept_fn = std::function<void(std::shared_ptr<client>)>;
+  using remove_fn = std::function<void(std::shared_ptr<client>)>;
   struct client {
     inline virtual ~client(){};
     virtual void shutdown()                                                     = 0;
     virtual void send(std::string_view, message_type type = message_type::TEXT) = 0;
   };
   inline virtual ~server_io() {}
-  virtual void shutdown()                 = 0;
-  virtual void accept(accept_fn, recv_fn) = 0;
+  virtual void shutdown()                            = 0;
+  virtual void accept(accept_fn, remove_fn, recv_fn) = 0;
 };
 
 struct client_io {
@@ -63,31 +64,31 @@ template <class T> struct wptr_less_than {
   }
 };
 
-template <typename Context> struct binary_frame_handler {
-  inline virtual void operator()(Context, std::string_view) {}
-};
-
-template <> struct binary_frame_handler<void> {
-  virtual void operator()(std::string_view) {}
-};
-
 class RPC {
-  using maybe_async_handler       = std::variant<std::function<json(std::shared_ptr<server_io::client>, json)>,
-                                           std::function<promise<json>(std::shared_ptr<server_io::client>, json)>>;
-  using maybe_async_proxy_handler = std::variant<std::function<json(std::shared_ptr<server_io::client>, std::smatch, json)>,
-                                                 std::function<promise<json>(std::shared_ptr<server_io::client>, std::smatch, json)>>;
-  using binary_frame_handler_t    = std::shared_ptr<binary_frame_handler<std::shared_ptr<server_io::client>>>;
+public:
+  using client_handler = std::shared_ptr<server_io::client>;
+  struct callback {
+    virtual void on_accept(client_handler){};
+    virtual void on_remove(client_handler){};
+    virtual void on_binary(client_handler, std::string_view data){};
+  };
+
+private:
+  using maybe_async_handler = std::variant<std::function<json(client_handler, json)>, std::function<promise<json>(client_handler, json)>>;
+  using maybe_async_proxy_handler =
+      std::variant<std::function<json(client_handler, std::smatch, json)>, std::function<promise<json>(client_handler, std::smatch, json)>>;
+  using callback_ref_t = std::shared_ptr<callback>;
   std::recursive_mutex mtx;
   std::unique_ptr<server_io> io;
   std::map<std::string, maybe_async_handler> methods;
   std::vector<std::tuple<std::regex, maybe_async_proxy_handler, size_t>> proxied_methods;
   std::vector<std::string> server_events;
   std::map<std::string, std::set<std::weak_ptr<server_io::client>, wptr_less_than<server_io::client>>> server_event_map;
-  binary_frame_handler_t binary_frame_handler_ref;
+  callback_ref_t callback_ref;
   size_t unqid;
 
 public:
-  RPC(decltype(io) &&io, binary_frame_handler_t handler = {});
+  RPC(decltype(io) &&io, callback_ref_t handler = std::make_shared<callback>());
   ~RPC();
 
   RPC(const RPC &) = delete;
@@ -107,19 +108,22 @@ public:
 
   class Client {
   public:
-    using data_fn                = std::function<void(json)>;
-    using binary_frame_handler_t = std::shared_ptr<binary_frame_handler<void>>;
+    struct callback {
+      virtual void on_binary(std::string_view data){};
+    };
+    using data_fn        = std::function<void(json)>;
+    using callback_ref_t = std::shared_ptr<callback>;
 
   private:
     std::recursive_mutex mtx;
     std::unique_ptr<client_io> io;
     std::map<std::string, data_fn> event_map;
     std::map<unsigned, promise<json>::resolver> regmap;
-    binary_frame_handler_t binary_frame_handler_ref;
+    callback_ref_t callback_ref;
     unsigned last_id;
 
   public:
-    Client(decltype(io) &&io, binary_frame_handler_t handler = {});
+    Client(decltype(io) &&io, callback_ref_t handler = std::make_shared<callback>());
     ~Client();
 
     Client(const Client &) = delete;
@@ -140,7 +144,7 @@ public:
   };
 
 private:
-  void incoming(std::shared_ptr<server_io::client>, std::string_view, message_type);
+  void incoming(client_handler, std::string_view, message_type);
 };
 
 } // namespace rpc
