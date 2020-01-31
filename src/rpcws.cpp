@@ -422,7 +422,8 @@ server_wsio::client::result server_wsio::client::handle(server_wsio::recv_fn con
   }
 
   if (state == State::STATE_OPENING) {
-    assert(type == FrameType::OPENING_FRAME);
+    if (type != FrameType::OPENING_FRAME)
+      safeSend(fd, "HTTP/1.1 400 Bad Request\r\n\r\n");
     if (hs.resource != path) {
       safeSend(fd, "HTTP/1.1 404 Not Found\r\n\r\n");
       return result::STOPPED;
